@@ -53,7 +53,7 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | Footnotes, math, emoji | `Markdown/MarkdownExtensions.swift`, `Markdown/MathText.swift` | Not parsed by swift-markdown. For rendering, `MarkdownExtensions.prepare` rewrites the source first: footnote definitions extracted, references and inline `$math$` replaced by private-use-character tokens (math hex-encoded so cmark can't touch it), `$$…$$` turned into ```` ```math ````; consumers resolve tokens with `segments(in:)`. Preview: superscript numbers + notes list; exports: linked `<sup>` + footnotes section. Math is TeX→Unicode (`MathText`, not a typesetter). Emoji: GitHub aliases, else Unicode names. The editor keeps the source and styles it (`spans.footnoteReferences/footnoteLabels/math`); cmark reads `[^id]: x` as a link reference definition, hence the line pass and the `[^…]` link special case. |
 | Preferences | `Models/AppSettings.swift` | Settings window (⌘,), View ▸ Zoom In/Out/Actual Size (text size 11–28 pt; everything scales from `EditorTheme.scale` and the preview's `markdownTextScale` environment), typeface (SF, New York, SF Rounded), focus mode (dims all but the caret's paragraph with layout-manager temporary attributes) and typewriter mode (caret line kept centred; bottom content inset so the end can centre). Toolbar shows word count and reading time. File ▸ Open Recent keeps the last ten projects as security-scoped bookmarks. |
 | Code highlighting | `Markdown/CodeHighlighter.swift` | Hand-written tokenizer, ~20 languages plus a generic fallback. Used by both editor and preview. Colours in `EditorTheme.color(for:)`. |
-| Tests | `mdbookTests/mdbookTests.swift`, `IncrementalStylingTests.swift` | 83 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
+| Tests | `mdbookTests/mdbookTests.swift`, `IncrementalStylingTests.swift`, `ProjectModelTests.swift` | 97 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. `ProjectModelTests` runs the model against a temporary book (autosave, external changes, conflicted copies, history, new/rename/delete, encodings, SUMMARY order) and saves/restores the user-defaults keys opening a project writes; `EditorCoordinatorTests` hosts the editor in a window. |
 
 ## How the WYSIWYG editor works (read before touching it)
 
@@ -185,7 +185,6 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 1. Mermaid diagrams (shown as source) and real math typesetting: both need a JS library in a
    WKWebView, i.e. a bundled third-party asset plus the Outgoing Connections entitlement
    (WebKit's content process dies in the sandbox without it). Deferred for now.
-2. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a

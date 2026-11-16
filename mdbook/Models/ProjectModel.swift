@@ -51,6 +51,11 @@ final class ProjectModel {
     /// Bound to the sidebar list. Changing it loads the file and records history
     /// (unless the change itself came from back/forward navigation).
     var selection: URL? {
+        // Save pending edits while the file they belong to is still the selection: `saveNow`
+        // writes to `selection`, so flushing any later would write them into the next file.
+        willSet {
+            if newValue != selection { flushPendingSave() }
+        }
         didSet {
             guard selection != oldValue else { return }
             if !isTraversingHistory, let previous = oldValue {
@@ -574,9 +579,11 @@ final class ProjectModel {
         guard isDirty else { return }
         saveNow()
         guard let url = externalChange, url == selection else { return }
-        let copy = url.deletingPathExtension()
-            .appendingPathExtension("conflicted copy")
-            .appendingPathExtension(url.pathExtension)
+        // Built by hand: `appendingPathExtension` silently ignores an extension with a space,
+        // which would make the "copy" the original file.
+        let base = url.deletingPathExtension().lastPathComponent
+        let name = url.pathExtension.isEmpty ? "\(base) (conflicted copy)" : "\(base) (conflicted copy).\(url.pathExtension)"
+        let copy = url.deletingLastPathComponent().appendingPathComponent(name)
         if (try? TextFile.write(text, to: copy, encoding: fileEncoding)) != nil {
             errorMessage = "\(url.lastPathComponent) changed on disk while you had unsaved edits. Your version was saved as \(copy.lastPathComponent)."
         } else {
@@ -745,12 +752,14 @@ final class ProjectModel {
         if node.isDirectory {
             expandedFolders = Set(expandedFolders.map(remap))
         }
-        refreshTree()
+        // Move the selection before refreshing the tree, which would otherwise drop it as
+        // a file that no longer exists.
         if let selection, remap(selection) != selection {
             isTraversingHistory = true
             self.selection = remap(selection)
             isTraversingHistory = false
         }
+        refreshTree()
     }
 
     func revealInFinder(_ url: URL) {
