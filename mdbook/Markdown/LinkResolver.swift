@@ -75,4 +75,14 @@ nonisolated enum LinkResolver {
         }
         return result
     }
+
+    // swiftlint:disable:next force_try
+    private static let bareURL = try! NSRegularExpression(pattern: #"(?<![\w"(<\]/])https?://[^\s<>)]+"#)
+
+    /// Bare `http(s)://` URLs in `range` of `text`. swift-markdown doesn't enable cmark-gfm's
+    /// autolink extension, so the editor and preview both find these themselves.
+    static func bareURLs(in text: String, range: NSRange? = nil) -> [NSRange] {
+        let range = range ?? NSRange(location: 0, length: (text as NSString).length)
+        return bareURL.matches(in: text, range: range).map(\.range)
+    }
 }

@@ -42,12 +42,12 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | File tree | `Models/FileNode.swift` | Markdown files plus folders that contain them. Folders first, natural sort. |
 | Sidebar | `Views/ProjectSidebarView.swift` | Recursive `DisclosureGroup`s bound to `expandedFolders`; context menus. |
 | Editor | `Editor/MarkdownEditorView.swift` (representable + coordinator), `MarkdownTextView.swift` (NSTextView subclass), `MarkdownStyler.swift`, `MarkdownLayoutManager.swift`, `EditorTheme.swift` | TextKit 1 stack built by hand so the layout manager delegate can hide glyphs. Two modes: `.wysiwyg` (hide markers away from the caret) and `.source` (monospace, coloured syntax). |
-| Markdown scanning | `Markdown/MarkdownHighlighter.swift` | Regex, line-oriented scanner producing `MarkdownSpans` (UTF-16 `NSRange`s) for the styler. **This is what the swift-markdown migration replaces.** |
-| Preview | `Views/MarkdownPreviewView.swift`, `Markdown/MarkdownBlockParser.swift` | Foundation's `AttributedString(markdown:)` (cmark-gfm) → `MarkdownBlock` tree → SwiftUI. Tables via `Grid`, task lists, images (local or `AsyncImage`), anchors via `ScrollViewReader`, approximate scroll sync from the source pane. |
+| Markdown scanning | `Markdown/MarkdownHighlighter.swift`, `MarkdownSourceMap.swift` | A swift-markdown `MarkupWalker` producing `MarkdownSpans` (UTF-16 `NSRange`s) for the styler. The source map converts cmark's UTF-8 byte columns. See "swift-markdown" below for the cmark position bugs it works around. |
+| Preview | `Views/MarkdownPreviewView.swift`, `Markdown/MarkdownBlockParser.swift` | swift-markdown tree → `MarkdownBlock` tree (inline `AttributedString`s with `inlinePresentationIntent` and `.link`) → SwiftUI. Tables via `Grid`, task lists, images (local or `AsyncImage`), anchors via `ScrollViewReader`, approximate scroll sync from the source pane. |
 | Links | `Markdown/LinkResolver.swift`, `HeadingSlug.swift` | Relative paths resolve against the document; folders fall back to README/index/SUMMARY; `#anchor` and `file.md#anchor` use GitHub-style slugs. |
 | Tables | `Markdown/MarkdownTableFormatter.swift` + styler/layout manager | Grid rendering when the caret is outside (pipes made clear and kerned so columns line up in the proportional font; delimiter row collapsed; header fill and grid drawn by the layout manager). Aligned monospaced source when the caret is inside; columns re-padded on leave. |
 | Code highlighting | `Markdown/CodeHighlighter.swift` | Hand-written tokenizer, ~20 languages plus a generic fallback. Used by both editor and preview. Colours in `EditorTheme.color(for:)`. |
-| Tests | `mdbookTests/mdbookTests.swift` | 37 Swift Testing tests: block parser, highlighter, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
+| Tests | `mdbookTests/mdbookTests.swift` | 49 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
 
 ## How the WYSIWYG editor works (read before touching it)
 
@@ -68,15 +68,14 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
   strikethrough never leak into new text.
 - `isRichText = false`, smart quotes/dashes off, spell check off by default.
 
-## In progress: adopt swift-markdown
+## swift-markdown
 
-Decision taken: replace the regex scanner (and ideally the preview's parser) with Apple's
-`swift-markdown` (https://github.com/swiftlang/swift-markdown, latest tag 0.9.0). Rationale: it
-is cmark-gfm with source ranges on every node, which removes a class of edge cases (compound
-styles, reference links, indented code, HTML blocks, setext corner cases) the regexes can't
-get right.
+The editor's scanner and the preview's parser both use Apple's `swift-markdown`
+(cmark-gfm, https://github.com/swiftlang/swift-markdown), so they agree on structure. The old
+regex scanner and the Foundation `AttributedString(markdown:)` preview parser are gone.
+Both parse with `.disableSmartOpts` so quotes stay as typed.
 
-### Package added
+### Package
 
 `swift-markdown` 0.9.0 (product **Markdown**, pulling in `swift-cmark` 0.9.0) is a dependency
 of the `mdbook` target, added through Xcode's Project editor → Package Dependencies tab (the
@@ -96,46 +95,63 @@ Xcode wrote this to `project.xcproj` (still don't hand-edit it; use Xcode for pa
 ],
 ```
 
-### Migration plan
+### How the scanner maps the tree
 
-1. `MarkdownSourceMap` (not yet in the repo; a draft was lost when the write failed): maps
-   swift-markdown `SourceLocation` (1-based line, 1-based **UTF-8 byte** column — verify with a
-   probe on a line containing an emoji) to UTF-16 offsets for `NSRange`.
-2. Reimplement `MarkdownHighlighter.scan` as a `MarkupWalker` producing the same
-   `MarkdownSpans`, so `MarkdownStyler` and the coordinator need no changes:
-   - Node ranges include delimiters; child ranges don't. Marker ranges = parent range minus
-     children (`Strong`, `Emphasis`, `Strikethrough`, `InlineCode`, `Link`, `Image`).
-   - `Heading`: ATX prefix = gap before first child; setext underline = last line of range.
-   - `CodeBlock`: first/last lines are fences; `language` from the node.
-   - `ListItem`: marker = gap before first child; `checkbox` gives the task state, find `[ ]`
-     with a tiny regex in that gap.
-   - `Table`: `head`/`body` rows and cells have ranges; the delimiter row is the line
-     between head and first body row; pipes via the existing `pipeRanges`.
-   - `BlockQuote`: `>` markers per line in the gap before children.
-   - `HTMLBlock` / `InlineHTML`: dim like markers.
-3. Reimplement `MarkdownBlockParser.parse` on the same tree so editor and preview agree
-   (build inline `AttributedString`s with `inlinePresentationIntent` and `.link`).
-4. Keep the existing tests green; add cases for reference links, indented code, HTML blocks
-   and nested emphasis. Expect to loosen `emphasis()`'s "8 markers" count if marker ranges
-   are merged differently.
-5. Consider `swift-markdown`'s `HTMLFormatter` for a later HTML export feature.
+- `SourceLocation` columns are 1-based **UTF-8 byte** offsets; upper bounds are exclusive.
+  `MarkdownSourceMap` converts them to UTF-16 (fast path for ASCII lines).
+- Markers are a node's range minus its children's span (`Strong`, `Emphasis`,
+  `Strikethrough`, `Link`, `Image`); code spans count their backticks. Every delimiter is
+  checked against the characters it should contain and the construct is dropped if not, so
+  a bad position never hides real text.
+- Headings: ATX prefix/suffix around the children; setext underline is the line after the
+  last child. Code blocks: whole lines, fences detected from the text, `language` is the
+  first word of the info string. List items: marker is the gap before the first child, with
+  the `[ ]` found inside it. Block quotes: `>` runs per line of the outermost quote (lazy
+  lines get an empty marker). HTML blocks and inline HTML go in `spans.html` (dimmed, never
+  hidden). Bare URLs come from `LinkResolver.bareURLs` because swift-markdown doesn't enable
+  cmark-gfm's autolink extension.
+
+### cmark position bugs worked around (all covered by tests)
+
+1. **Continuation lines.** Inline columns are `paragraph start column + offset into the
+   line's content` on every line, so on lines whose content starts elsewhere (task items,
+   tab-indented or deeper lazy lines) they are wrong. `SpanWalker.offset(_:)` re-bases them
+   on the line's real content start (after up to quote-depth `>` markers and whitespace).
+2. **Tables that interrupt a paragraph** (`intro\n| a |\n|---|`) are reported starting on
+   the paragraph's line, with header columns counted as if the lines were joined. The real
+   header is found from the delimiter row and header columns go through
+   `MarkdownSourceMap.offset(flowingFrom:)`. The interrupted paragraph itself has no range,
+   so its inline styling is lost (rare; left alone).
+3. **Escaped pipes in cells.** GFM drops the backslash of `\|` before parsing a cell, so
+   later columns come up short by one per escape; they're shifted back.
+4. **Multi-line setext headings** report a range running into the next block, hence the
+   underline rule above.
+
+Note GFM splits a table cell on an unescaped `|` even inside backticks (GitHub does the same).
+`pipeRanges` still treats those as text, so the editor grid and the preview can differ on
+such rows.
+
+Comparing old vs new scanner over the corpus: no bad markers, slightly faster
+(~65 ms vs ~72 ms for all 20 files), and multi-line emphasis and code spans the old
+line-based scanner missed or mis-paired are now found.
+
+Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 ## Known gaps (priority order)
 
 1. SUMMARY.md-driven chapter order with previous/next navigation.
 2. Project-wide search.
-3. Reference-style links, indented code blocks, inline HTML (all fall out of the migration).
-4. Inline images in the WYSIWYG view (text attachments).
-5. Incremental restyling for large files (or adopt STTextView).
-6. Tab/Shift-Tab list indentation, paste URL over selection, drop images into the project.
-7. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
-8. Export to HTML/PDF, printing, copy as rich text.
-9. Footnotes, math, Mermaid, emoji shortcodes.
-10. Tests for the coordinator, autosave, rename and history.
+3. Inline images in the WYSIWYG view (text attachments).
+4. Incremental restyling for large files (or adopt STTextView).
+5. Tab/Shift-Tab list indentation, paste URL over selection, drop images into the project.
+6. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
+7. Export to HTML/PDF, printing, copy as rich text.
+8. Footnotes, math, Mermaid, emoji shortcodes.
+9. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: tables wider than the editor wrap and break the grid; an image nested inside a
-link renders as link text (Foundation drops `imageURL` there); auto-align rewrites table text
-when the caret leaves (undoable).
+link renders as the image in the preview but isn't clickable; raw HTML blocks show as source
+in the preview; auto-align rewrites table text when the caret leaves (undoable).
 
 ## Conventions
 

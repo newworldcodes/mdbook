@@ -2,13 +2,14 @@
 //  MarkdownHighlighter.swift
 //  mdbook
 //
-//  A line-oriented scanner that finds the ranges of markdown constructs in
-//  source text. The editor uses these ranges to style text in place and to
-//  hide syntax markers for a WYSIWYG feel. Ranges are UTF-16 `NSRange`s so
-//  they can be applied directly to an `NSTextStorage`.
+//  Finds the ranges of markdown constructs in source text by walking the swift-markdown
+//  (cmark-gfm) syntax tree. The editor uses these ranges to style text in place and to
+//  hide syntax markers for a WYSIWYG feel. Ranges are UTF-16 `NSRange`s so they can be
+//  applied directly to an `NSTextStorage`.
 //
 
 import Foundation
+import Markdown
 
 nonisolated struct MarkdownSpans: Sendable {
     struct Heading: Sendable {
@@ -20,7 +21,9 @@ nonisolated struct MarkdownSpans: Sendable {
     struct CodeBlock: Sendable {
         /// The full range including fence lines.
         var range: NSRange
+        /// The opening and (if present) closing fence. Empty for indented code blocks.
         var fenceLines: [NSRange]
+        var language: String?
     }
 
     struct BlockQuote: Sendable {
@@ -69,197 +72,24 @@ nonisolated struct MarkdownSpans: Sendable {
     var strikethrough: [NSRange] = []
     var inlineCode: [NSRange] = []
     var links: [Link] = []
+    /// HTML blocks and inline tags, dimmed like syntax but never hidden.
+    var html: [NSRange] = []
     /// Syntax markers that can be hidden when the containing paragraph is not being edited.
     var markers: [NSRange] = []
 }
 
 nonisolated enum MarkdownHighlighter {
-    private struct Patterns {
-        let fence = regex(#"^\s{0,3}(`{3,}|~{3,})"#)
-        let atxHeading = regex(#"^\s{0,3}(#{1,6})(?:[ \t]+(.*?))??(?:[ \t]+#+)?[ \t]*$"#)
-        let setextUnderline = regex(#"^\s{0,3}(=+|-+)\s*$"#)
-        let blockQuote = regex(#"^\s{0,3}((?:>[ \t]?)+)"#)
-        let thematicBreak = regex(#"^\s{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"#)
-        let listItem = regex(#"^([ \t]*)([-*+]|\d{1,9}[.)])([ \t]+|$)(\[[ xX]\](?=[ \t]|$))?"#)
-        let tableDelimiter = regex(#"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$"#)
-
-        let codeSpan = regex(#"(`+)(.+?)\1"#)
-        let image = regex(#"!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#)
-        // The label may contain plain text or a nested image (badge-style links).
-        let link = regex(#"(?<!!)\[((?:[^\[\]]|!\[[^\]]*\]\([^)]*\))+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)"#)
-        let autolink = regex(#"<((?:https?://|mailto:)[^>\s]+)>"#)
-        let bareURL = regex(#"(?<![\w"(<\]/])https?://[^\s<>)]+"#)
-        let boldItalic = regex(#"(\*\*\*|___)(?=\S)(.+?)(?<=\S)\1"#)
-        let bold = regex(#"(\*\*|__)(?=\S)(.+?)(?<=\S)\1"#)
-        let italicStar = regex(#"(?<![*\w\\])\*(?=[^\s*])(.+?)(?<=[^\s*\\])\*(?![*\w])"#)
-        let italicUnderscore = regex(#"(?<![_\w\\])_(?=[^\s_])(.+?)(?<=[^\s_\\])_(?![_\w])"#)
-        let strikethrough = regex(#"~~(?=\S)(.+?)(?<=\S)~~"#)
-
-        private static func regex(_ pattern: String) -> NSRegularExpression {
-            // Patterns are compile-time constants, so a failure here is a programming error.
-            // swiftlint:disable:next force_try
-            try! NSRegularExpression(pattern: pattern)
-        }
-    }
-
-    private static let patterns = Patterns()
-
     static func scan(_ text: String) -> MarkdownSpans {
-        let ns = text as NSString
-        var spans = MarkdownSpans()
-
-        // Collect line ranges (excluding terminators) and the ranges including terminators.
-        var lines: [NSRange] = []
-        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, range, _, _ in
-            lines.append(range)
-        }
-        if ns.length == 0 || ns.hasSuffix("\n") {
-            lines.append(NSRange(location: ns.length, length: 0))
-        }
-
-        // First pass: table delimiter rows tell us which neighbouring lines form a table.
-        var tableLineIndices = Set<Int>()
-        for (index, line) in lines.enumerated() where index > 0 {
-            guard !tableLineIndices.contains(index), line.length > 0, ns.substring(with: line).contains("-"),
-                  patterns.tableDelimiter.firstMatch(in: text, range: line) != nil else { continue }
-            let header = lines[index - 1]
-            guard header.length > 0, ns.substring(with: header).contains("|") else { continue }
-            var tableLines = [header, line]
-            var next = index + 1
-            while next < lines.count, lines[next].length > 0, ns.substring(with: lines[next]).contains("|") {
-                tableLines.append(lines[next])
-                next += 1
-            }
-            for tableIndex in (index - 1)..<next { tableLineIndices.insert(tableIndex) }
-            guard let last = tableLines.last else { continue }
-            spans.tables.append(.init(
-                range: NSRange(location: header.location, length: NSMaxRange(last) - header.location),
-                headerLine: header,
-                delimiterLine: line,
-                lines: tableLines,
-                pipes: tableLines.flatMap { pipeRanges(in: $0, ns: ns) }
-            ))
-        }
-
-        var fenceStart: Int?
-        var fenceMarker = ""
-        var fenceOpenLine = NSRange(location: 0, length: 0)
-        var previousWasParagraph = false
-        var previousLine = NSRange(location: 0, length: 0)
-
-        for (index, line) in lines.enumerated() {
-            let lineText = ns.substring(with: line)
-            let trimmed = lineText.trimmingCharacters(in: .whitespaces)
-
-            // Fenced code blocks swallow everything until the closing fence.
-            if let start = fenceStart {
-                if let match = patterns.fence.firstMatch(in: text, range: line),
-                   ns.substring(with: match.range(at: 1)).hasPrefix(fenceMarker),
-                   let fenceCharacter = fenceMarker.first,
-                   trimmed.allSatisfy({ $0 == fenceCharacter }) {
-                    let range = NSRange(location: start, length: NSMaxRange(line) - start)
-                    spans.codeBlocks.append(.init(range: range, fenceLines: [fenceOpenLine, line]))
-                    fenceStart = nil
-                }
-                previousWasParagraph = false
-                continue
-            }
-
-            if let match = patterns.fence.firstMatch(in: text, range: line) {
-                fenceStart = line.location
-                fenceMarker = ns.substring(with: match.range(at: 1))
-                fenceOpenLine = line
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            if trimmed.isEmpty {
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            if tableLineIndices.contains(index) {
-                spans.tableLines.append(line)
-                scanInline(text, ns: ns, in: line, into: &spans)
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            // Setext headings: a paragraph line followed by === or ---.
-            if previousWasParagraph, let match = patterns.setextUnderline.firstMatch(in: text, range: line) {
-                let level = ns.substring(with: match.range(at: 1)).hasPrefix("=") ? 1 : 2
-                if let existing = spans.headings.firstIndex(where: { $0.line == previousLine }) {
-                    spans.headings.remove(at: existing)
-                }
-                spans.headings.append(.init(level: level, line: previousLine, content: previousLine))
-                spans.markers.append(line)
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            if patterns.thematicBreak.firstMatch(in: text, range: line) != nil {
-                spans.thematicBreaks.append(line)
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            if let match = patterns.atxHeading.firstMatch(in: text, range: line) {
-                let hashes = match.range(at: 1)
-                let contentRange = match.range(at: 2)
-                let content = contentRange.location == NSNotFound
-                    ? NSRange(location: NSMaxRange(line), length: 0)
-                    : contentRange
-                spans.headings.append(.init(level: hashes.length, line: line, content: content))
-                spans.markers.append(NSRange(location: line.location, length: content.location - line.location))
-                if NSMaxRange(content) < NSMaxRange(line) {
-                    spans.markers.append(NSRange(location: NSMaxRange(content), length: NSMaxRange(line) - NSMaxRange(content)))
-                }
-                scanInline(text, ns: ns, in: content, into: &spans)
-                previousWasParagraph = false
-                previousLine = line
-                continue
-            }
-
-            var contentRange = line
-            if let match = patterns.blockQuote.firstMatch(in: text, range: line) {
-                let marker = match.range(at: 1)
-                spans.blockQuotes.append(.init(line: line, marker: marker))
-                contentRange = NSRange(location: NSMaxRange(marker), length: NSMaxRange(line) - NSMaxRange(marker))
-            }
-
-            if let match = patterns.listItem.firstMatch(in: text, range: contentRange) {
-                let indent = match.range(at: 1).length
-                let markerRange = NSRange(location: match.range(at: 2).location, length: NSMaxRange(match.range(at: 3)) - match.range(at: 2).location)
-                let ordered = ns.substring(with: match.range(at: 2)).first?.isNumber == true
-                let taskRange = match.range(at: 4).location == NSNotFound ? nil : match.range(at: 4)
-                spans.listItems.append(.init(line: line, marker: markerRange, indent: indent, ordered: ordered, task: taskRange))
-                let contentStart = NSMaxRange(match.range)
-                contentRange = NSRange(location: contentStart, length: NSMaxRange(line) - contentStart)
-            }
-
-            scanInline(text, ns: ns, in: contentRange, into: &spans)
-            previousWasParagraph = true
-            previousLine = line
-        }
-
-        // An unterminated fence runs to the end of the document.
-        if let start = fenceStart {
-            spans.codeBlocks.append(.init(range: NSRange(location: start, length: ns.length - start), fenceLines: [fenceOpenLine]))
-        }
-
-        // Inline passes run per construct type; report links in document order.
-        spans.links.sort { $0.text.location < $1.text.location }
-        return spans
+        let document = Document(parsing: text, options: [.disableSmartOpts])
+        var walker = SpanWalker(text: text, map: MarkdownSourceMap(text))
+        walker.visit(document)
+        walker.spans.links.sort { $0.text.location < $1.text.location }
+        return walker.spans
     }
 
     /// Positions of cell-separating pipes in a table line (escaped pipes and pipes in
     /// inline code don't count).
-    private static func pipeRanges(in line: NSRange, ns: NSString) -> [NSRange] {
+    static func pipeRanges(in line: NSRange, ns: NSString) -> [NSRange] {
         var ranges: [NSRange] = []
         var inCode = false
         var escaped = false
@@ -279,120 +109,374 @@ nonisolated enum MarkdownHighlighter {
         }
         return ranges
     }
+}
 
-    // MARK: - Inline constructs
+// MARK: - Tree walker
 
-    private static func scanInline(_ text: String, ns: NSString, in range: NSRange, into spans: inout MarkdownSpans) {
-        guard range.length > 0 else { return }
-        var protected: [NSRange] = []
+private nonisolated struct SpanWalker: MarkupWalker {
+    /// The source, kept as a `String` so regex calls don't re-bridge it.
+    let text: String
+    let map: MarkdownSourceMap
+    var spans = MarkdownSpans()
 
-        func isFree(_ candidate: NSRange) -> Bool {
-            !protected.contains { NSIntersectionRange($0, candidate).length > 0 }
+    /// The paragraph or heading whose inline content is being visited. See `offset(_:)`.
+    private var leaf: (line: Int, column: Int, quoteDepth: Int)?
+    private var quoteDepth = 0
+    private var linkDepth = 0
+    /// Set while inside a table header that cmark mis-placed onto the line of the paragraph
+    /// it interrupted. See `MarkdownSourceMap.offset(flowingFrom:)`.
+    private var headerFlowsFromLine: Int?
+    /// The table cell being visited and the byte columns of each `\|` in it. GFM removes
+    /// those backslashes before parsing the cell, so later inline columns come up short.
+    private var cellEscapes: (line: Int, columns: [Int])?
+
+    private static let quoteMarkers = regex(#"[ \t]*((?:>[ \t]?)+)"#)
+    private static let checkbox = regex(#"\[[ xX]\]"#)
+    private static let tableDelimiter = regex(#"[ \t]*(?:>[ \t]?)*[ \t]*\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$"#)
+
+    init(text: String, map: MarkdownSourceMap) {
+        self.text = text
+        self.map = map
+    }
+
+    private var ns: NSString { map.ns }
+
+    // MARK: Positions
+
+    /// UTF-16 offset of a source location inside the current leaf block.
+    ///
+    /// cmark reports every inline column as `leaf start column + offset into the line's
+    /// content`, using the leaf's *first* line start for all its lines. On continuation
+    /// lines whose content starts elsewhere (lists with checkboxes, tab-indented or deeper
+    /// lazy lines) that is wrong, so re-base it on where the content of that line really
+    /// starts: after up to `quoteDepth` `>` markers and any whitespace.
+    private func offset(_ location: SourceLocation) -> Int {
+        if let headerFlowsFromLine, location.line == headerFlowsFromLine {
+            return map.offset(flowingFrom: location)
         }
-
-        for match in patterns.codeSpan.matches(in: text, range: range) where isFree(match.range) {
-            let ticks = match.range(at: 1)
-            spans.inlineCode.append(match.range(at: 2))
-            spans.markers.append(ticks)
-            spans.markers.append(NSRange(location: NSMaxRange(match.range) - ticks.length, length: ticks.length))
-            protected.append(match.range)
+        if let cellEscapes, location.line == cellEscapes.line {
+            var column = location.column
+            for escape in cellEscapes.columns where escape < column { column += 1 }
+            return map.offset(line: location.line, column: column)
         }
+        guard let leaf, location.line > leaf.line else { return map.offset(location) }
+        let contentStart = contentStartColumn(onLine: location.line, quoteDepth: leaf.quoteDepth)
+        return map.offset(line: location.line, column: location.column - leaf.column + contentStart)
+    }
 
-        for match in patterns.image.matches(in: text, range: range) where isFree(match.range) {
-            let alt = match.range(at: 1)
-            spans.links.append(.init(text: alt, destination: ns.substring(with: match.range(at: 2)), isImage: true))
-            spans.markers.append(NSRange(location: match.range.location, length: alt.location - match.range.location))
-            spans.markers.append(NSRange(location: NSMaxRange(alt), length: NSMaxRange(match.range) - NSMaxRange(alt)))
-            protected.append(match.range)
+    /// 1-based UTF-8 column of the first content character of a line. Everything skipped
+    /// is ASCII, so the UTF-16 distance equals the byte distance.
+    private func contentStartColumn(onLine line: Int, quoteDepth: Int) -> Int {
+        let lineRange = map.lineRange(line)
+        let end = NSMaxRange(lineRange)
+        var index = lineRange.location
+        func skipWhitespace() {
+            while index < end, ns.character(at: index) == 0x20 || ns.character(at: index) == 0x09 { index += 1 }
         }
-
-        for match in patterns.link.matches(in: text, range: range) {
-            let label = match.range(at: 1)
-            // Only the delimiters must be free: the label may legitimately wrap a protected image.
-            let opening = NSRange(location: match.range.location, length: 1)
-            let closing = NSRange(location: NSMaxRange(label), length: NSMaxRange(match.range) - NSMaxRange(label))
-            guard isFree(opening), isFree(closing) else { continue }
-            spans.links.append(.init(text: label, destination: ns.substring(with: match.range(at: 2)), isImage: false))
-            spans.markers.append(opening)
-            spans.markers.append(NSRange(location: NSMaxRange(label), length: NSMaxRange(match.range) - NSMaxRange(label)))
-            // Only the destination is protected so emphasis inside the label still works.
-            protected.append(NSRange(location: match.range.location, length: 1))
-            protected.append(NSRange(location: NSMaxRange(label), length: NSMaxRange(match.range) - NSMaxRange(label)))
+        for _ in 0..<quoteDepth {
+            skipWhitespace()
+            guard index < end, ns.character(at: index) == 0x3E else { break } // >
+            index += 1
+            if index < end, ns.character(at: index) == 0x20 || ns.character(at: index) == 0x09 { index += 1 }
         }
+        skipWhitespace()
+        return index - lineRange.location + 1
+    }
 
-        for match in patterns.autolink.matches(in: text, range: range) where isFree(match.range) {
-            let url = match.range(at: 1)
-            spans.links.append(.init(text: url, destination: ns.substring(with: url), isImage: false))
-            spans.markers.append(NSRange(location: match.range.location, length: 1))
-            spans.markers.append(NSRange(location: NSMaxRange(match.range) - 1, length: 1))
-            protected.append(match.range)
+    private func inlineRange(_ markup: Markup) -> NSRange? {
+        guard let range = markup.range else { return nil }
+        let start = offset(range.lowerBound)
+        let end = offset(range.upperBound)
+        guard end >= start else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// The span covered by a node's children: its content without delimiters.
+    private func childrenRange(_ markup: Markup) -> NSRange? {
+        let ranges = markup.children.compactMap(inlineRange)
+        guard let start = ranges.map(\.location).min(), let end = ranges.map(NSMaxRange).max() else { return nil }
+        return NSRange(location: start, length: end - start)
+    }
+
+    private func blockLines(_ markup: Markup) -> ClosedRange<Int>? {
+        markup.range.map(map.lines(of:))
+    }
+
+    private func consists(_ range: NSRange, of characters: Set<unichar>) -> Bool {
+        (range.location..<NSMaxRange(range)).allSatisfy { characters.contains(ns.character(at: $0)) }
+    }
+
+    private mutating func addMarker(_ range: NSRange) {
+        if range.length > 0 { spans.markers.append(range) }
+    }
+
+    /// Splits `outer` around `inner` into opening and closing delimiters.
+    private func delimiters(_ outer: NSRange, around inner: NSRange) -> (opening: NSRange, closing: NSRange)? {
+        guard inner.location >= outer.location, NSMaxRange(inner) <= NSMaxRange(outer) else { return nil }
+        return (
+            NSRange(location: outer.location, length: inner.location - outer.location),
+            NSRange(location: NSMaxRange(inner), length: NSMaxRange(outer) - NSMaxRange(inner))
+        )
+    }
+
+    // MARK: Blocks
+
+    mutating func visitParagraph(_ paragraph: Paragraph) {
+        withLeaf(paragraph) { $0.descendInto(paragraph) }
+    }
+
+    mutating func visitHeading(_ heading: Heading) {
+        defer { withLeaf(heading) { $0.descendInto(heading) } }
+        guard let range = heading.range else { return }
+        let content = withLeaf(heading) { $0.childrenRange(heading) }
+
+        // A setext underline is the line after the last line of content. (cmark's range for
+        // a multi-line setext heading can run on into the next block, so don't trust it.)
+        let lastContentLine = heading.children.compactMap(\.range?.upperBound.line).max() ?? range.lowerBound.line
+        let underline = lastContentLine + 1
+        let isSetext = underline <= min(range.upperBound.line, map.lineCount)
+            && isSetextUnderline(ns.substring(with: map.lineRange(underline)))
+
+        if !isSetext {
+            // ATX: `## Title ##`
+            let line = map.lineRange(range.lowerBound.line)
+            let start = map.offset(range.lowerBound)
+            let content = content ?? NSRange(location: NSMaxRange(line), length: 0)
+            spans.headings.append(.init(level: heading.level, line: line, content: content))
+            addMarker(NSRange(location: start, length: content.location - start))
+            addMarker(NSRange(location: NSMaxRange(content), length: NSMaxRange(line) - NSMaxRange(content)))
+        } else {
+            // Setext: text lines followed by a `===` or `---` underline.
+            let line = map.range(ofLines: range.lowerBound.line...lastContentLine)
+            spans.headings.append(.init(level: heading.level, line: line, content: content ?? line))
+            addMarker(map.lineRange(underline))
         }
+    }
 
-        for match in patterns.bareURL.matches(in: text, range: range) where isFree(match.range) {
-            spans.links.append(.init(text: match.range, destination: ns.substring(with: match.range), isImage: false))
-            protected.append(match.range)
-        }
+    private func isSetextUnderline(_ line: String) -> Bool {
+        let underline = line.drop { $0 == " " || $0 == "\t" || $0 == ">" }.trimmingCharacters(in: .whitespaces)
+        guard let first = underline.first, first == "=" || first == "-" else { return false }
+        return underline.allSatisfy { $0 == first }
+    }
 
-        // Emphasis may wrap code spans and links, but must not start or end inside them.
-        // Mask the protected ranges with a neutral letter so the emphasis regexes neither
-        // see their contents nor fail their non-whitespace lookarounds at the boundary.
-        let masked = NSMutableString(string: ns.substring(with: range))
-        for protectedRange in protected {
-            let local = NSIntersectionRange(protectedRange, range)
-            guard local.length > 0 else { continue }
-            masked.replaceCharacters(
-                in: NSRange(location: local.location - range.location, length: local.length),
-                with: String(repeating: "x", count: local.length)
-            )
-        }
-        let maskedString = masked as String
-        let maskedRange = NSRange(location: 0, length: masked.length)
-        let offset = range.location
+    mutating func visitCodeBlock(_ codeBlock: CodeBlock) {
+        guard let range = codeBlock.range, let lines = blockLines(codeBlock) else { return }
+        let firstLine = map.lineRange(lines.lowerBound)
+        let start = map.offset(range.lowerBound)
+        let opening = ns.substring(with: NSRange(location: start, length: NSMaxRange(firstLine) - start))
+            .trimmingCharacters(in: .whitespaces)
+        var fenceLines: [NSRange] = []
 
-        for match in patterns.boldItalic.matches(in: maskedString, range: maskedRange) {
-            let content = shifted(match.range(at: 2), by: offset)
-            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
-            spans.bold.append(content)
-            spans.italic.append(content)
-        }
-
-        for match in patterns.bold.matches(in: maskedString, range: maskedRange) {
-            let content = shifted(match.range(at: 2), by: offset)
-            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
-            spans.bold.append(content)
-        }
-
-        for regex in [patterns.italicStar, patterns.italicUnderscore] {
-            for match in regex.matches(in: maskedString, range: maskedRange) {
-                let content = shifted(match.range(at: 1), by: offset)
-                guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
-                spans.italic.append(content)
+        if let fenceCharacter = opening.first, fenceCharacter == "`" || fenceCharacter == "~" {
+            fenceLines.append(firstLine)
+            let fenceLength = opening.prefix { $0 == fenceCharacter }.count
+            if lines.count > 1 {
+                let lastLine = map.lineRange(lines.upperBound)
+                let closing = ns.substring(with: lastLine).drop { $0 == " " || $0 == "\t" || $0 == ">" }
+                    .trimmingCharacters(in: .whitespaces)
+                if closing.count >= fenceLength, closing.allSatisfy({ $0 == fenceCharacter }) {
+                    fenceLines.append(lastLine)
+                }
             }
         }
 
-        for match in patterns.strikethrough.matches(in: maskedString, range: maskedRange) {
-            let content = shifted(match.range(at: 1), by: offset)
-            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
-            spans.strikethrough.append(content)
+        // `language` is the whole info string (`rust title="x"`); the first word names it.
+        let language = codeBlock.language?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        spans.codeBlocks.append(.init(range: map.range(ofLines: lines), fenceLines: fenceLines, language: language))
+    }
+
+    mutating func visitHTMLBlock(_ html: HTMLBlock) {
+        guard let lines = blockLines(html) else { return }
+        spans.html.append(map.range(ofLines: lines))
+    }
+
+    mutating func visitThematicBreak(_ thematicBreak: ThematicBreak) {
+        guard let lines = blockLines(thematicBreak) else { return }
+        spans.thematicBreaks.append(map.range(ofLines: lines))
+    }
+
+    mutating func visitBlockQuote(_ blockQuote: BlockQuote) {
+        // Nested quotes share their outer quote's `> > ` marker run, so only the outermost
+        // quote records lines.
+        if quoteDepth == 0, let range = blockQuote.range, let lines = blockLines(blockQuote) {
+            for lineNumber in lines {
+                let line = map.lineRange(lineNumber)
+                let start = lineNumber == lines.lowerBound ? map.offset(range.lowerBound) : line.location
+                let searchRange = NSRange(location: start, length: NSMaxRange(line) - start)
+                let marker = Self.quoteMarkers.firstMatch(in: text, options: .anchored, range: searchRange)?.range(at: 1)
+                    // A lazy continuation line has no marker of its own.
+                    ?? NSRange(location: start, length: 0)
+                spans.blockQuotes.append(.init(line: line, marker: marker))
+            }
+        }
+        quoteDepth += 1
+        descendInto(blockQuote)
+        quoteDepth -= 1
+    }
+
+    mutating func visitListItem(_ listItem: ListItem) {
+        defer { descendInto(listItem) }
+        guard let range = listItem.range else { return }
+        let line = map.lineRange(range.lowerBound.line)
+        let start = map.offset(range.lowerBound)
+        var contentStart = NSMaxRange(line)
+        if let first = listItem.child(at: 0)?.range, first.lowerBound.line == range.lowerBound.line {
+            contentStart = map.offset(first.lowerBound)
+        }
+        guard contentStart >= start else { return }
+        let gap = NSRange(location: start, length: contentStart - start)
+
+        var marker = gap
+        var task: NSRange?
+        if listItem.checkbox != nil, let box = Self.checkbox.firstMatch(in: text, range: gap)?.range {
+            task = box
+            marker = NSRange(location: start, length: box.location - start)
+        }
+
+        // Indentation of the bullet, not counting any block quote markers before it.
+        let prefix = NSRange(location: line.location, length: start - line.location)
+        let quotePrefix = Self.quoteMarkers.firstMatch(in: text, options: .anchored, range: prefix)?.range ?? NSRange(location: line.location, length: 0)
+        let indent = prefix.length - quotePrefix.length
+
+        spans.listItems.append(.init(line: line, marker: marker, indent: indent, ordered: listItem.parent is OrderedList, task: task))
+    }
+
+    mutating func visitTable(_ table: Markdown.Table) {
+        guard var lines = blockLines(table).map(Array.init) else {
+            descendInto(table)
+            return
+        }
+        // When a table interrupts a paragraph, cmark starts its range (and reports its header)
+        // on the paragraph's first line. The header really is the line above the delimiter row.
+        let reportedStart = lines[0]
+        if let delimiterIndex = lines.firstIndex(where: { line in
+            Self.tableDelimiter.firstMatch(in: text, options: .anchored, range: map.lineRange(line)) != nil
+        }), delimiterIndex >= 1 {
+            lines.removeFirst(delimiterIndex - 1)
+        }
+        while let last = lines.last, lines.count > 2, ns.substring(with: map.lineRange(last)).trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeLast()
+        }
+        if lines[0] != reportedStart { headerFlowsFromLine = reportedStart }
+        descendInto(table)
+        headerFlowsFromLine = nil
+        guard lines.count >= 2 else { return }
+        let lineRanges = lines.map(map.lineRange)
+        spans.tables.append(.init(
+            range: map.range(ofLines: lines[0]...lines[lines.count - 1]),
+            headerLine: lineRanges[0],
+            delimiterLine: lineRanges[1],
+            lines: lineRanges,
+            pipes: lineRanges.flatMap { MarkdownHighlighter.pipeRanges(in: $0, ns: ns) }
+        ))
+        spans.tableLines.append(contentsOf: lineRanges)
+    }
+
+    mutating func visitTableCell(_ cell: Markdown.Table.Cell) {
+        if let range = cell.range, range.lowerBound.line != headerFlowsFromLine {
+            let line = map.lineRange(range.lowerBound.line)
+            if ns.range(of: "\\|", options: .literal, range: line).location != NSNotFound {
+                let bytes = Array(ns.substring(with: line).utf8)
+                let cellBytes = max(0, range.lowerBound.column - 1)..<min(bytes.count, range.upperBound.column - 1)
+                let columns = cellBytes.filter { $0 + 1 < bytes.count && bytes[$0] == 0x5C && bytes[$0 + 1] == 0x7C }.map { $0 + 1 }
+                cellEscapes = (range.lowerBound.line, columns)
+            }
+        }
+        withLeaf(cell) { $0.descendInto(cell) }
+        cellEscapes = nil
+    }
+
+    /// Runs `body` with `markup` as the leaf block that inline positions are relative to.
+    private mutating func withLeaf<Result>(_ markup: Markup, _ body: (inout SpanWalker) -> Result) -> Result {
+        let saved = leaf
+        if let start = markup.range?.lowerBound {
+            leaf = (start.line, start.column, quoteDepth)
+        }
+        defer { leaf = saved }
+        return body(&self)
+    }
+
+    // MARK: Inlines
+
+    mutating func visitStrong(_ strong: Strong) {
+        delimited(strong, by: [0x2A, 0x5F], into: \.bold) // * _
+    }
+
+    mutating func visitEmphasis(_ emphasis: Emphasis) {
+        delimited(emphasis, by: [0x2A, 0x5F], into: \.italic)
+    }
+
+    mutating func visitStrikethrough(_ strikethrough: Strikethrough) {
+        delimited(strikethrough, by: [0x7E], into: \.strikethrough) // ~
+    }
+
+    /// Records the content of an emphasis-like node and hides its delimiters, provided the
+    /// delimiters really are the expected characters (guards against bad source positions).
+    private mutating func delimited(_ markup: Markup, by characters: Set<unichar>, into keyPath: WritableKeyPath<MarkdownSpans, [NSRange]>) {
+        defer { descendInto(markup) }
+        guard let outer = inlineRange(markup), let inner = childrenRange(markup),
+              let (opening, closing) = delimiters(outer, around: inner),
+              consists(opening, of: characters), consists(closing, of: characters) else { return }
+        spans[keyPath: keyPath].append(inner)
+        addMarker(opening)
+        addMarker(closing)
+    }
+
+    mutating func visitInlineCode(_ inlineCode: InlineCode) {
+        guard let outer = inlineRange(inlineCode), outer.length >= 2 else { return }
+        let backtick: unichar = 0x60
+        var ticks = 0
+        while ticks < outer.length, ns.character(at: outer.location + ticks) == backtick { ticks += 1 }
+        guard ticks > 0, outer.length >= ticks * 2,
+              consists(NSRange(location: NSMaxRange(outer) - ticks, length: ticks), of: [backtick]) else { return }
+        spans.inlineCode.append(NSRange(location: outer.location + ticks, length: outer.length - ticks * 2))
+        addMarker(NSRange(location: outer.location, length: ticks))
+        addMarker(NSRange(location: NSMaxRange(outer) - ticks, length: ticks))
+    }
+
+    mutating func visitLink(_ link: Link) {
+        defer {
+            linkDepth += 1
+            descendInto(link)
+            linkDepth -= 1
+        }
+        // An empty label (`[](x)`) has nothing to show, so leave its syntax visible.
+        guard let outer = inlineRange(link), let inner = childrenRange(link),
+              let (opening, closing) = delimiters(outer, around: inner), opening.length > 0,
+              [0x5B, 0x3C].contains(ns.character(at: opening.location)) else { return } // [ <
+        spans.links.append(.init(text: inner, destination: link.destination ?? "", isImage: false))
+        addMarker(opening)
+        addMarker(closing)
+    }
+
+    mutating func visitImage(_ image: Image) {
+        defer {
+            linkDepth += 1
+            descendInto(image)
+            linkDepth -= 1
+        }
+        guard let outer = inlineRange(image), let inner = childrenRange(image),
+              let (opening, closing) = delimiters(outer, around: inner), opening.length >= 2,
+              ns.character(at: opening.location) == 0x21 else { return } // !
+        spans.links.append(.init(text: inner, destination: image.source ?? "", isImage: true))
+        addMarker(opening)
+        addMarker(closing)
+    }
+
+    mutating func visitInlineHTML(_ inlineHTML: InlineHTML) {
+        if let range = inlineRange(inlineHTML) { spans.html.append(range) }
+    }
+
+    mutating func visitText(_ textNode: Markdown.Text) {
+        guard linkDepth == 0, let range = inlineRange(textNode), range.length > 0 else { return }
+        for url in LinkResolver.bareURLs(in: text, range: range) {
+            spans.links.append(.init(text: url, destination: ns.substring(with: url), isImage: false))
         }
     }
 
-    private static func shifted(_ range: NSRange, by offset: Int) -> NSRange {
-        NSRange(location: range.location + offset, length: range.length)
-    }
-
-    /// Records the opening and closing delimiters around `content` as hideable markers,
-    /// unless either delimiter overlaps something already claimed (e.g. an earlier
-    /// emphasis run), in which case nothing is recorded and `false` is returned.
-    private static func addDelimiters(of match: NSRange, around content: NSRange, into spans: inout MarkdownSpans, protected: inout [NSRange]) -> Bool {
-        let opening = NSRange(location: match.location, length: content.location - match.location)
-        let closing = NSRange(location: NSMaxRange(content), length: NSMaxRange(match) - NSMaxRange(content))
-        let isFree = !protected.contains { NSIntersectionRange($0, opening).length > 0 || NSIntersectionRange($0, closing).length > 0 }
-        guard isFree else { return false }
-        spans.markers.append(opening)
-        spans.markers.append(closing)
-        protected.append(opening)
-        protected.append(closing)
-        return true
+    private static func regex(_ pattern: String) -> NSRegularExpression {
+        // Patterns are compile-time constants, so a failure here is a programming error.
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: pattern)
     }
 }

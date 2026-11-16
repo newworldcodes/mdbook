@@ -79,6 +79,36 @@ struct MarkdownBlockParserTests {
         #expect(segments.contains(.image(source: "img/logo.png", alt: "Logo")))
     }
 
+    @Test("Inline styles become presentation intents")
+    func inlineStyles() {
+        let blocks = MarkdownBlockParser.parse("**b** *i* ~~s~~ `c` [l][r] https://x.org\n\n[r]: ref.md")
+        guard case .paragraph(let segments) = blocks.first, case .text(let text) = segments[0] else { Issue.record("expected paragraph"); return }
+        func intent(of needle: String) -> InlinePresentationIntent? {
+            text.runs.first { String(text[$0.range].characters) == needle }?.inlinePresentationIntent
+        }
+        #expect(intent(of: "b") == .stronglyEmphasized)
+        #expect(intent(of: "i") == .emphasized)
+        #expect(intent(of: "s") == .strikethrough)
+        #expect(intent(of: "c") == .code)
+        #expect(text.runs.compactMap(\.link).map(\.absoluteString) == ["ref.md", "https://x.org"])
+    }
+
+    @Test("Ordered lists keep their start number and images inside links still render")
+    func listStartAndLinkedImages() {
+        let blocks = MarkdownBlockParser.parse("3. three\n4. four\n\n[![badge](b.svg)](https://ci)")
+        guard case .list(true, let items) = blocks.first else { Issue.record("expected list"); return }
+        #expect(items.map(\.ordinal) == [3, 4])
+        guard case .paragraph(let segments) = blocks.last else { Issue.record("expected paragraph"); return }
+        #expect(segments.contains(.image(source: "b.svg", alt: "badge")))
+    }
+
+    @Test("Indented code and HTML blocks")
+    func indentedCodeAndHTML() {
+        let blocks = MarkdownBlockParser.parse("    let x = 1\n\n<div>hi</div>\n")
+        #expect(blocks.first == .codeBlock(language: nil, code: "let x = 1"))
+        #expect(blocks.last == .codeBlock(language: "html", code: "<div>hi</div>"))
+    }
+
     @Test("Block quotes contain nested blocks")
     func blockQuotes() {
         let blocks = MarkdownBlockParser.parse("> quoted\n>\n> - item\n")
@@ -166,7 +196,8 @@ struct MarkdownHighlighterTests {
 
     @Test("List items, tasks and block quotes")
     func listsAndQuotes() {
-        let text = "- [ ] task\n  2. nested\n> quote"
+        // An ordered list must start at 1 to interrupt the item's paragraph and nest.
+        let text = "- [ ] task\n  1. nested\n> quote"
         let spans = MarkdownHighlighter.scan(text)
         #expect(spans.listItems.count == 2)
         #expect(spans.listItems[0].task == range(of: "[ ]", in: text))
@@ -181,6 +212,126 @@ struct MarkdownHighlighterTests {
     func tables() {
         let spans = MarkdownHighlighter.scan("| a | b |\n|---|---|\n| 1 | 2 |\n\nnot | table")
         #expect(spans.tableLines.count == 3)
+    }
+
+    @Test("Ranges stay correct after multi-byte characters")
+    func unicodeOffsets() {
+        let text = "é 😀 **bold** 中文 `code`\n## 👋 Hi"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.bold == [range(of: "bold", in: text)])
+        #expect(spans.inlineCode == [range(of: "code", in: text)])
+        #expect(spans.headings.first?.content == range(of: "👋 Hi", in: text))
+    }
+
+    @Test("Inline ranges on continuation lines are re-based on the line's own content")
+    func continuationLines() {
+        let samples = [
+            "- [ ] task\n  more *em* here",
+            "1) x\n\t*em* lazy",
+            "> > q\n> lazy *em*\nlazier *em2*",
+            "para\n      deep *em*",
+        ]
+        for text in samples {
+            let spans = MarkdownHighlighter.scan(text)
+            let ns = text as NSString
+            #expect(!spans.italic.isEmpty, "\(text.debugDescription)")
+            for italic in spans.italic {
+                #expect(ns.substring(with: italic).hasPrefix("em"), "\(text.debugDescription)")
+            }
+            for marker in spans.markers where marker.length == 1 && ns.substring(with: marker) != "-" {
+                #expect(ns.substring(with: marker) == "*", "\(text.debugDescription)")
+            }
+        }
+    }
+
+    @Test("Reference links resolve their destination")
+    func referenceLinks() {
+        let text = "See [the docs][ref] and [ref].\n\n[ref]: https://example.com"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.links.count == 2)
+        #expect(spans.links[0].text == range(of: "the docs", in: text))
+        #expect(spans.links.allSatisfy { $0.destination == "https://example.com" })
+        #expect(spans.markers.contains(range(of: "][ref]", in: text)))
+    }
+
+    @Test("Indented code blocks are code without fences")
+    func indentedCode() {
+        let text = "para\n\n    let x = **1**\n\nafter"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.codeBlocks.count == 1)
+        #expect(spans.codeBlocks[0].fenceLines.isEmpty)
+        #expect(spans.codeBlocks[0].range == range(of: "    let x = **1**", in: text))
+        #expect(spans.bold.isEmpty)
+    }
+
+    @Test("Fenced code blocks report their language")
+    func codeLanguage() {
+        let spans = MarkdownHighlighter.scan("```rust title\nfn x() {}\n```")
+        #expect(spans.codeBlocks.first?.language == "rust")
+    }
+
+    @Test("HTML blocks and inline tags are dimmed, not parsed")
+    func html() {
+        let text = "<div>\n**raw**\n</div>\n\na <kbd>K</kbd> b"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.html.contains(range(of: "<div>\n**raw**\n</div>", in: text)))
+        #expect(spans.html.contains(range(of: "<kbd>", in: text)))
+        #expect(spans.bold.isEmpty)
+    }
+
+    @Test("Nested emphasis hides every delimiter")
+    func nestedEmphasis() {
+        let text = "***both*** and **bold *inner* bold**"
+        let spans = MarkdownHighlighter.scan(text)
+        let ns = text as NSString
+        #expect(spans.bold.contains(range(of: "both", in: text)))
+        #expect(spans.italic.contains(range(of: "inner", in: text)))
+        #expect(spans.italic.count == 2)
+        let hidden = spans.markers.map { ns.substring(with: $0) }.joined()
+        #expect(hidden == String(repeating: "*", count: 12))
+    }
+
+    @Test("Setext headings spanning two lines")
+    func multilineSetext() {
+        let text = "First\nsecond\n===\nbody"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.headings.count == 1)
+        #expect(spans.headings[0].level == 1)
+        #expect(spans.headings[0].line == range(of: "First\nsecond", in: text))
+        #expect(spans.markers == [range(of: "===", in: text)])
+    }
+
+    @Test("Tables that interrupt a paragraph, and escaped pipes in cells")
+    func tableQuirks() {
+        let text = "intro **x**\n| **a** | b |\n|---|---|\n| `\\|\\|` and *c* | 2 |"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.tables.first?.headerLine == range(of: "| **a** | b |", in: text))
+        #expect(spans.bold.contains(range(of: "a", in: text)))
+        #expect(spans.inlineCode == [range(of: "\\|\\|", in: text)])
+        #expect(spans.italic == [range(of: "c", in: text)])
+    }
+
+    @Test("Empty documents and CRLF line endings")
+    func lineEndings() {
+        #expect(MarkdownHighlighter.scan("").headings.isEmpty)
+        let text = "# A\r\n\r\n**b**\r\n"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.headings.first?.content == range(of: "A", in: text))
+        #expect(spans.bold == [range(of: "b", in: text)])
+    }
+}
+
+@Suite("Markdown source map")
+struct MarkdownSourceMapTests {
+    @Test("UTF-8 byte columns map to UTF-16 offsets")
+    func columns() {
+        let map = MarkdownSourceMap("a😀b\né\n")
+        #expect(map.lineCount == 3)
+        #expect(map.offset(line: 1, column: 2) == 1) // 😀
+        #expect(map.offset(line: 1, column: 6) == 3) // b, after a 4-byte / 2-unit emoji
+        #expect(map.offset(line: 2, column: 3) == 6) // end of "é"
+        #expect(map.offset(line: 2, column: 99) == 6) // clamped to the line
+        #expect(map.offset(line: 9, column: 1) == 7) // past the end
     }
 }
 

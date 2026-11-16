@@ -1,8 +1,8 @@
 # mdbook
 
-macOS markdown book reader/editor. SwiftUI + AppKit text system, no third-party packages
-yet. Read `HANDOFF.md` first for architecture, the WYSIWYG editor's invariants, and the
-in-progress swift-markdown migration.
+macOS markdown book reader/editor. SwiftUI + AppKit text system; markdown parsing via
+swift-markdown (the only package). Read `HANDOFF.md` first for architecture, the WYSIWYG
+editor's invariants, and the cmark source-position bugs the scanner works around.
 
 ## Commands
 

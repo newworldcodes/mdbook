@@ -2,12 +2,13 @@
 //  MarkdownBlockParser.swift
 //  mdbook
 //
-//  Converts GitHub Flavored Markdown into a block tree using Foundation's
-//  markdown parser (cmark-gfm under the hood). The tree is what the rendered
-//  preview draws.
+//  Converts GitHub Flavored Markdown into a block tree using swift-markdown
+//  (cmark-gfm), the same parser the editor's highlighter uses, so the preview and
+//  the editor agree on structure. The tree is what the rendered preview draws.
 //
 
 import Foundation
+import Markdown
 
 nonisolated enum MarkdownTextAlignment: Hashable, Sendable {
     case left, center, right
@@ -46,192 +47,203 @@ nonisolated indirect enum MarkdownBlock: Hashable, Sendable {
 }
 
 nonisolated enum MarkdownBlockParser {
-    /// A run of the parsed attributed string together with its block nesting,
-    /// ordered from the outermost block to the innermost.
-    private struct Run {
-        var text: AttributedString
-        var imageSource: String?
-        var components: [PresentationIntent.IntentType]
-    }
-
     static func parse(_ markdown: String) -> [MarkdownBlock] {
+        // CommonMark doesn't allow spaces in link destinations, but books often contain
+        // `[chapter](my chapter.md)`; encode them so those still parse as links.
         let prepared = LinkResolver.encodingSpacesInLinkDestinations(markdown)
-        var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .full
-        options.failurePolicy = .returnPartiallyParsedIfPossible
-        options.allowsExtendedAttributes = true
-        guard let attributed = try? AttributedString(markdown: prepared, options: options) else {
-            return [.paragraph([.text(AttributedString(markdown))])]
-        }
-
-        var runs: [Run] = []
-        for run in attributed.runs {
-            var piece = AttributedString(attributed[run.range])
-            piece.presentationIntent = nil
-            let components = (run.presentationIntent?.components ?? []).reversed()
-            runs.append(Run(text: piece, imageSource: run.imageURL?.absoluteString, components: Array(components)))
-        }
-        return buildBlocks(runs[...], depth: 0)
+        let document = Document(parsing: prepared, options: [.disableSmartOpts])
+        return blocks(in: document.children)
     }
 
-    // MARK: - Tree construction
+    // MARK: - Blocks
 
-    /// Splits `runs` into consecutive groups that share the same block at `depth`.
-    private static func group(_ runs: ArraySlice<Run>, depth: Int) -> [ArraySlice<Run>] {
-        var groups: [ArraySlice<Run>] = []
-        var start = runs.startIndex
-        var index = runs.startIndex
-        var currentIdentity: Int? = runs.first.flatMap { identity(of: $0, depth: depth) }
-        while index < runs.endIndex {
-            let id = identity(of: runs[index], depth: depth)
-            if id != currentIdentity {
-                groups.append(runs[start..<index])
-                start = index
-                currentIdentity = id
-            }
-            index += 1
-        }
-        if start < runs.endIndex { groups.append(runs[start..<runs.endIndex]) }
-        return groups
+    private static func blocks(in children: MarkupChildren) -> [MarkdownBlock] {
+        children.compactMap(block)
     }
 
-    private static func identity(of run: Run, depth: Int) -> Int? {
-        run.components.indices.contains(depth) ? run.components[depth].identity : nil
-    }
-
-    private static func buildBlocks(_ runs: ArraySlice<Run>, depth: Int) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        for part in group(runs, depth: depth) {
-            guard let first = part.first else { continue }
-            guard first.components.indices.contains(depth) else {
-                blocks.append(.paragraph(segments(from: part)))
-                continue
-            }
-            switch first.components[depth].kind {
-            case .paragraph:
-                blocks.append(.paragraph(segments(from: part)))
-            case .header(let level):
-                blocks.append(.heading(level: level, content: mergedText(from: part)))
-            case .codeBlock(let languageHint):
-                var code = part.map { String($0.text.characters) }.joined()
-                if code.hasSuffix("\n") { code.removeLast() }
-                let language = languageHint?.isEmpty == false ? languageHint : nil
-                blocks.append(.codeBlock(language: language, code: code))
-            case .blockQuote:
-                blocks.append(.blockQuote(buildBlocks(part, depth: depth + 1)))
-            case .orderedList:
-                blocks.append(.list(ordered: true, items: buildListItems(part, depth: depth + 1)))
-            case .unorderedList:
-                blocks.append(.list(ordered: false, items: buildListItems(part, depth: depth + 1)))
-            case .listItem:
-                // A list item without an enclosing list; treat it as an unordered list.
-                blocks.append(.list(ordered: false, items: buildListItems(part, depth: depth)))
-            case .table(let columns):
-                blocks.append(.table(buildTable(part, columns: columns, depth: depth + 1)))
-            case .thematicBreak:
-                blocks.append(.thematicBreak)
-            default:
-                blocks.append(.paragraph(segments(from: part)))
-            }
-        }
-        return blocks
-    }
-
-    private static func buildListItems(_ runs: ArraySlice<Run>, depth: Int) -> [MarkdownListItem] {
-        var items: [MarkdownListItem] = []
-        for part in group(runs, depth: depth) {
-            guard let first = part.first, first.components.indices.contains(depth),
-                  case .listItem(let ordinal) = first.components[depth].kind else {
-                items.append(MarkdownListItem(ordinal: items.count + 1, task: nil, blocks: buildBlocks(part, depth: depth)))
-                continue
-            }
-            var blocks = buildBlocks(part, depth: depth + 1)
-            let task = extractTaskState(from: &blocks)
-            items.append(MarkdownListItem(ordinal: ordinal, task: task, blocks: blocks))
-        }
-        return items
-    }
-
-    /// GitHub task lists (`- [ ] item`) come through as literal text; detect and strip them.
-    private static func extractTaskState(from blocks: inout [MarkdownBlock]) -> MarkdownTaskState? {
-        guard case .paragraph(var segments) = blocks.first,
-              case .text(var text) = segments.first else { return nil }
-        let plain = String(text.characters)
-        let state: MarkdownTaskState
-        let prefixLength: Int
-        if plain.hasPrefix("[ ] ") || plain == "[ ]" {
-            state = .unchecked
-            prefixLength = min(4, plain.count)
-        } else if plain.hasPrefix("[x] ") || plain.hasPrefix("[X] ") || plain.lowercased() == "[x]" {
-            state = .checked
-            prefixLength = min(4, plain.count)
-        } else {
+    private static func block(_ markup: Markup) -> MarkdownBlock? {
+        switch markup {
+        case let paragraph as Paragraph:
+            return .paragraph(segments(paragraph))
+        case let heading as Heading:
+            return .heading(level: heading.level, content: text(heading))
+        case let code as CodeBlock:
+            var source = code.code
+            if source.hasSuffix("\n") { source.removeLast() }
+            // `language` is the whole info string; the first word names the language.
+            let language = code.language?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+            return .codeBlock(language: language, code: source)
+        case let html as HTMLBlock:
+            // Raw HTML isn't rendered; show it as source rather than dropping it.
+            var source = html.rawHTML
+            if source.hasSuffix("\n") { source.removeLast() }
+            return .codeBlock(language: "html", code: source)
+        case let quote as BlockQuote:
+            return .blockQuote(blocks(in: quote.children))
+        case let list as OrderedList:
+            return .list(ordered: true, items: items(list.listItems, start: Int(list.startIndex)))
+        case let list as UnorderedList:
+            return .list(ordered: false, items: items(list.listItems, start: 1))
+        case let table as Markdown.Table:
+            return .table(self.table(table))
+        case is ThematicBreak:
+            return .thematicBreak
+        default:
             return nil
         }
-        let cutoff = text.characters.index(text.startIndex, offsetBy: prefixLength)
-        text.removeSubrange(text.startIndex..<cutoff)
-        segments[0] = .text(text)
-        blocks[0] = .paragraph(segments)
-        return state
     }
 
-    private static func buildTable(_ runs: ArraySlice<Run>, columns: [PresentationIntent.TableColumn], depth: Int) -> MarkdownTable {
-        let alignments: [MarkdownTextAlignment] = columns.map {
-            switch $0.alignment {
-            case .center: return .center
-            case .right: return .right
-            default: return .left
+    private static func items(_ listItems: some Sequence<ListItem>, start: Int) -> [MarkdownListItem] {
+        listItems.enumerated().map { index, item in
+            let task: MarkdownTaskState? = switch item.checkbox {
+            case .checked: .checked
+            case .unchecked: .unchecked
+            case nil: nil
             }
+            return MarkdownListItem(ordinal: start + index, task: task, blocks: blocks(in: item.children))
         }
-        var header: [AttributedString] = Array(repeating: AttributedString(), count: columns.count)
-        var rows: [[AttributedString]] = []
+    }
 
-        for rowPart in group(runs, depth: depth) {
-            guard let first = rowPart.first, first.components.indices.contains(depth) else { continue }
-            var cells = Array(repeating: AttributedString(), count: max(columns.count, 1))
-            for cellPart in group(rowPart, depth: depth + 1) {
-                guard let cellFirst = cellPart.first, cellFirst.components.indices.contains(depth + 1),
-                      case .tableCell(let columnIndex) = cellFirst.components[depth + 1].kind else { continue }
-                if columnIndex < cells.count {
-                    cells[columnIndex] = mergedText(from: cellPart)
-                }
-            }
-            switch first.components[depth].kind {
-            case .tableHeaderRow: header = cells
-            case .tableRow: rows.append(cells)
-            default: break
+    private static func table(_ table: Markdown.Table) -> MarkdownTable {
+        let alignments: [MarkdownTextAlignment] = table.columnAlignments.map {
+            switch $0 {
+            case .center: .center
+            case .right: .right
+            case .left, nil: .left
             }
         }
-        return MarkdownTable(alignments: alignments, header: header, rows: rows)
+        let columns = max(table.maxColumnCount, 1)
+        func cells(_ row: some Sequence<Markdown.Table.Cell>) -> [AttributedString] {
+            var cells = row.map(text)
+            cells.append(contentsOf: Array(repeating: AttributedString(), count: max(0, columns - cells.count)))
+            return Array(cells.prefix(columns))
+        }
+        return MarkdownTable(
+            alignments: alignments,
+            header: cells(table.head.cells),
+            rows: table.body.rows.map { cells($0.cells) }
+        )
     }
 
     // MARK: - Inline content
 
-    private static func segments(from runs: ArraySlice<Run>) -> [MarkdownInlineSegment] {
-        var segments: [MarkdownInlineSegment] = []
-        var pending = AttributedString()
-        for run in runs {
-            if let source = run.imageSource {
-                if !pending.characters.isEmpty {
-                    segments.append(.text(pending))
-                    pending = AttributedString()
-                }
-                segments.append(.image(source: source, alt: String(run.text.characters)))
-            } else {
-                pending.append(run.text)
-            }
-        }
+    /// Inline content split into text runs and the images between them.
+    private static func segments(_ container: Markup) -> [MarkdownInlineSegment] {
+        var renderer = InlineRenderer(imagesAsSegments: true)
+        renderer.render(children: container)
+        return renderer.finish()
+    }
+
+    /// Inline content as one attributed string (images contribute their alt text).
+    private static func text(_ container: Markup) -> AttributedString {
+        var renderer = InlineRenderer(imagesAsSegments: false)
+        renderer.render(children: container)
+        return renderer.pending
+    }
+}
+
+/// Builds `AttributedString`s whose `inlinePresentationIntent` and `link` attributes SwiftUI's
+/// `Text` renders directly.
+private nonisolated struct InlineRenderer {
+    let imagesAsSegments: Bool
+    var segments: [MarkdownInlineSegment] = []
+    var pending = AttributedString()
+    private var intent: InlinePresentationIntent = []
+    private var link: URL?
+
+    init(imagesAsSegments: Bool) {
+        self.imagesAsSegments = imagesAsSegments
+    }
+
+    mutating func render(children markup: Markup) {
+        for child in markup.children { render(child) }
+    }
+
+    mutating func finish() -> [MarkdownInlineSegment] {
         if !pending.characters.isEmpty || segments.isEmpty {
             segments.append(.text(pending))
         }
         return segments
     }
 
-    private static func mergedText(from runs: ArraySlice<Run>) -> AttributedString {
-        var result = AttributedString()
-        for run in runs where run.imageSource == nil {
-            result.append(run.text)
+    private mutating func render(_ markup: Markup) {
+        switch markup {
+        case let text as Markdown.Text:
+            append(text.string)
+        case is SoftBreak:
+            append(" ")
+        case is LineBreak:
+            append("\n")
+        case let code as InlineCode:
+            styled(.code) { $0.append(code.code) }
+        case let html as InlineHTML:
+            // A `<br>` is a line break; other tags are shown as typed.
+            let tag = html.rawHTML.lowercased().filter { !$0.isWhitespace }
+            append(["<br>", "<br/>"].contains(tag) ? "\n" : html.rawHTML)
+        case let image as Image:
+            if imagesAsSegments {
+                if !pending.characters.isEmpty {
+                    segments.append(.text(pending))
+                    pending = AttributedString()
+                }
+                segments.append(.image(source: image.source ?? "", alt: image.plainText))
+            } else {
+                append(image.plainText)
+            }
+        case is Emphasis:
+            styled(.emphasized) { $0.render(children: markup) }
+        case is Strong:
+            styled(.stronglyEmphasized) { $0.render(children: markup) }
+        case is Strikethrough:
+            styled(.strikethrough) { $0.render(children: markup) }
+        case let linkNode as Link:
+            let saved = link
+            link = linkNode.destination.flatMap(Self.url)
+            render(children: linkNode)
+            link = saved
+        default:
+            render(children: markup)
         }
-        return result
+    }
+
+    private mutating func styled(_ added: InlinePresentationIntent, _ body: (inout InlineRenderer) -> Void) {
+        let saved = intent
+        intent.formUnion(added)
+        body(&self)
+        intent = saved
+    }
+
+    private mutating func append(_ string: String) {
+        guard !string.isEmpty else { return }
+        guard link == nil else {
+            pending.append(piece(string, link: link))
+            return
+        }
+        // Bare URLs become links, as they do in the editor.
+        let ns = string as NSString
+        var location = 0
+        for url in LinkResolver.bareURLs(in: string) {
+            if url.location > location {
+                pending.append(piece(ns.substring(with: NSRange(location: location, length: url.location - location)), link: nil))
+            }
+            let urlString = ns.substring(with: url)
+            pending.append(piece(urlString, link: URL(string: urlString)))
+            location = NSMaxRange(url)
+        }
+        if location < ns.length {
+            pending.append(piece(ns.substring(from: location), link: nil))
+        }
+    }
+
+    private func piece(_ string: String, link: URL?) -> AttributedString {
+        var piece = AttributedString(string)
+        if !intent.isEmpty { piece.inlinePresentationIntent = intent }
+        if let link { piece.link = link }
+        return piece
+    }
+
+    private static func url(_ destination: String) -> URL? {
+        URL(string: destination)
+            ?? destination.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed).flatMap { URL(string: $0) }
     }
 }

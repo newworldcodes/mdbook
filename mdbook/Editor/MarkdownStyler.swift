@@ -123,6 +123,10 @@ struct MarkdownStyler {
             }
         }
 
+        for range in spans.html where NSMaxRange(range) <= storage.length {
+            storage.addAttribute(.foregroundColor, value: theme.markerColor, range: range)
+        }
+
         // Tables after inline styling so cell measurements use their final fonts.
         for table in spans.tables {
             styleTable(table, storage: storage, asGrid: rendersAsGrid(table, activeRegion: activeRegion), hiddenMarkers: spans.markers)
@@ -176,12 +180,9 @@ struct MarkdownStyler {
         let contentEnd = block.fenceLines.count > 1 ? block.fenceLines[1].location : NSMaxRange(block.range)
         guard contentEnd > contentStart, contentEnd <= storage.length else { return }
 
-        let fenceText = ns.substring(with: openingFence)
-        let language = fenceText.drop(while: { $0 == " " || $0 == "\t" || $0 == "`" || $0 == "~" })
-            .prefix(while: { !$0.isWhitespace })
         let contentRange = NSRange(location: contentStart, length: contentEnd - contentStart)
         let code = ns.substring(with: contentRange)
-        for token in CodeHighlighter.tokens(in: code, language: String(language)) {
+        for token in CodeHighlighter.tokens(in: code, language: block.language) {
             let range = NSRange(location: contentStart + token.range.location, length: token.range.length)
             guard NSMaxRange(range) <= contentEnd else { continue }
             storage.addAttribute(.foregroundColor, value: EditorTheme.color(for: token.kind), range: range)
