@@ -21,7 +21,14 @@ struct MarkdownStyler {
 
         // Block-level constructs first; inline styling layers on top of them.
         for block in spans.codeBlocks {
-            storage.addAttributes([.font: theme.codeFont, .backgroundColor: theme.codeBackground], range: block.range)
+            // The layout manager draws a full-width panel for `.markdownCodeBlock`.
+            storage.addAttributes([.font: theme.codeFont, .markdownCodeBlock: true], range: block.range)
+            if theme.mode == .wysiwyg {
+                let style = mutableParagraphStyle()
+                style.lineSpacing = 1
+                style.paragraphSpacing = 0
+                storage.addAttribute(.paragraphStyle, value: style, range: block.range)
+            }
             for fence in block.fenceLines {
                 storage.addAttribute(.foregroundColor, value: theme.markerColor, range: fence)
             }

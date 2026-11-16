@@ -10,8 +10,8 @@ nonisolated enum LinkResolver {
     enum Resolution: Equatable, Sendable {
         /// A web / mail / other scheme link that should open outside the app.
         case external(URL)
-        /// A file on disk, resolved relative to the current document.
-        case file(URL)
+        /// A file on disk, resolved relative to the current document, plus any `#anchor`.
+        case file(URL, fragment: String?)
         /// An in-document anchor such as `#installation`.
         case anchor(String)
         case invalid
@@ -30,7 +30,7 @@ nonisolated enum LinkResolver {
 
         if let url = URL(string: dest), let scheme = url.scheme?.lowercased() {
             if scheme == "file" {
-                return .file(url.standardizedFileURL)
+                return .file(url.standardizedFileURL, fragment: url.fragment)
             }
             // Windows-style drive letters would show up as single-letter schemes;
             // treat anything longer than one character as a real scheme.
@@ -39,16 +39,20 @@ nonisolated enum LinkResolver {
             }
         }
 
-        // Strip query and fragment, then percent-decode the remaining path.
+        // Split off the fragment and query, then percent-decode the remaining path.
         var path = dest
-        if let hash = path.firstIndex(of: "#") { path = String(path[..<hash]) }
+        var fragment: String?
+        if let hash = path.firstIndex(of: "#") {
+            fragment = String(path[path.index(after: hash)...])
+            path = String(path[..<hash])
+        }
         if let query = path.firstIndex(of: "?") { path = String(path[..<query]) }
         path = path.removingPercentEncoding ?? path
         guard !path.isEmpty else { return .invalid }
 
         let base = documentURL?.deletingLastPathComponent()
         let url = URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
-        return .file(url)
+        return .file(url, fragment: fragment?.isEmpty == false ? fragment : nil)
     }
 
     /// Markdown parsers ignore link destinations that contain raw spaces.

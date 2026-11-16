@@ -76,6 +76,15 @@ final class ProjectModel {
     /// Set when the user asks to delete a node; drives the confirmation dialog.
     var nodePendingDeletion: FileNode?
 
+    /// Set when the user asks to rename a node; drives the rename prompt.
+    var nodePendingRename: FileNode?
+    var renameName: String = ""
+
+    /// The heading the editor and preview should scroll to (from a `#anchor` link).
+    private(set) var pendingAnchor: AnchorRequest?
+
+    private var watcher: FolderWatcher?
+
     // MARK: Navigation history
 
     private var backStack: [URL] = []
@@ -104,7 +113,7 @@ final class ProjectModel {
                 MainActor.assumeIsolated { self?.flushPendingSave() }
             },
             center.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: nil) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refreshTree() }
+                MainActor.assumeIsolated { self?.folderDidChangeOnDisk() }
             },
         ]
     }
@@ -167,7 +176,12 @@ final class ProjectModel {
         forwardStack = []
         text = ""
         isDirty = false
+        pendingAnchor = nil
         persistBookmark(for: scopeTarget)
+        watcher = nil
+        if file == nil {
+            startWatching(url)
+        }
     }
 
     /// Reopens the folder or file from the previous session, if the sandbox lets us.
@@ -306,12 +320,11 @@ final class ProjectModel {
         switch LinkResolver.resolve(linkDestination, relativeTo: selection) {
         case .external(let url):
             NSWorkspace.shared.open(url)
-        case .anchor:
-            // In-document anchors are not yet supported; nothing to navigate to.
-            NSSound.beep()
+        case .anchor(let name):
+            pendingAnchor = AnchorRequest(anchor: name)
         case .invalid:
             NSSound.beep()
-        case .file(var url):
+        case .file(var url, let fragment):
             var isDirectory: ObjCBool = false
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
                 errorMessage = "The linked file doesn't exist:\n\(url.path)"
@@ -329,6 +342,9 @@ final class ProjectModel {
             if FileNode.isMarkdownFile(url), isInsideProject(url) {
                 if FileNode.find(url, in: tree) == nil { refreshTree() }
                 navigate(to: url)
+                if let fragment {
+                    pendingAnchor = AnchorRequest(anchor: fragment)
+                }
             } else {
                 NSWorkspace.shared.open(url)
             }
@@ -392,7 +408,114 @@ final class ProjectModel {
         refreshTree()
     }
 
+    func requestRename(_ node: FileNode) {
+        renameName = node.isDirectory ? node.name : node.url.deletingPathExtension().lastPathComponent
+        nodePendingRename = node
+    }
+
+    func renamePendingNode() {
+        guard let node = nodePendingRename else { return }
+        nodePendingRename = nil
+        var name = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/") else { return }
+        if !node.isDirectory, !FileNode.isMarkdownFile(URL(fileURLWithPath: name)) {
+            name += "." + (node.url.pathExtension.isEmpty ? "md" : node.url.pathExtension)
+        }
+        let destination = node.url.deletingLastPathComponent().appendingPathComponent(name).standardizedFileURL
+        guard destination != node.url else { return }
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            errorMessage = "Something named \(name) already exists."
+            return
+        }
+
+        flushPendingSave()
+        do {
+            try FileManager.default.moveItem(at: node.url, to: destination)
+        } catch {
+            errorMessage = "Couldn't rename \(node.name): \(error.localizedDescription)"
+            return
+        }
+
+        // Keep the selection and history pointing at the moved item(s).
+        let remap: (URL) -> URL = { url in
+            if url == node.url { return destination }
+            if node.isDirectory, url.path.hasPrefix(node.url.path + "/") {
+                let suffix = url.path.dropFirst(node.url.path.count)
+                return URL(fileURLWithPath: destination.path + suffix)
+            }
+            return url
+        }
+        backStack = backStack.map(remap)
+        forwardStack = forwardStack.map(remap)
+        if node.isDirectory {
+            expandedFolders = Set(expandedFolders.map(remap))
+        }
+        refreshTree()
+        if let selection, remap(selection) != selection {
+            isTraversingHistory = true
+            self.selection = remap(selection)
+            isTraversingHistory = false
+        }
+    }
+
     func revealInFinder(_ url: URL) {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
+
+    // MARK: - Outline
+
+    struct OutlineEntry: Identifiable, Hashable {
+        let id: Int
+        let level: Int
+        let title: String
+    }
+
+    @ObservationIgnored private var outlineCache: (text: String, entries: [OutlineEntry])?
+
+    /// Headings of the current document, for the Outline menu.
+    var outline: [OutlineEntry] {
+        if let outlineCache, outlineCache.text == text { return outlineCache.entries }
+        let ns = text as NSString
+        let entries = MarkdownHighlighter.scan(text).headings
+            .sorted { $0.line.location < $1.line.location }
+            .enumerated()
+            .map { index, heading in
+                let title = HeadingSlug.plainText(ofHeadingSource: ns.substring(with: heading.content))
+                return OutlineEntry(id: index, level: heading.level, title: title.isEmpty ? "Untitled" : title)
+            }
+        outlineCache = (text, entries)
+        return entries
+    }
+
+    func jump(to entry: OutlineEntry) {
+        pendingAnchor = AnchorRequest(anchor: HeadingSlug.slug(for: entry.title))
+    }
+
+    // MARK: - Watching the folder
+
+    private func startWatching(_ url: URL) {
+        watcher = FolderWatcher(url: url) { [weak self] in
+            self?.folderDidChangeOnDisk()
+        }
+    }
+
+    private func folderDidChangeOnDisk() {
+        refreshTree()
+        reloadCurrentFileIfChangedOnDisk()
+    }
+
+    /// Picks up edits made by other apps, as long as we have no unsaved changes of our own.
+    private func reloadCurrentFileIfChangedOnDisk() {
+        guard !isDirty, let url = selection,
+              let onDisk = try? String(contentsOf: url, encoding: .utf8),
+              onDisk != text else { return }
+        text = onDisk
+    }
+}
+
+/// A request to scroll to a heading. Each request has its own identity so the same
+/// anchor can be followed twice in a row.
+struct AnchorRequest: Equatable {
+    let id = UUID()
+    let anchor: String
 }

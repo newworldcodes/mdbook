@@ -182,9 +182,9 @@ struct LinkResolverTests {
 
     @Test("Relative paths resolve against the document folder")
     func relative() {
-        #expect(LinkResolver.resolve("two.md", relativeTo: document) == .file(URL(fileURLWithPath: "/book/chapters/two.md")))
-        #expect(LinkResolver.resolve("../README.md#intro", relativeTo: document) == .file(URL(fileURLWithPath: "/book/README.md")))
-        #expect(LinkResolver.resolve("my%20file.md", relativeTo: document) == .file(URL(fileURLWithPath: "/book/chapters/my file.md")))
+        #expect(LinkResolver.resolve("two.md", relativeTo: document) == .file(URL(fileURLWithPath: "/book/chapters/two.md"), fragment: nil))
+        #expect(LinkResolver.resolve("../README.md#intro", relativeTo: document) == .file(URL(fileURLWithPath: "/book/README.md"), fragment: "intro"))
+        #expect(LinkResolver.resolve("my%20file.md", relativeTo: document) == .file(URL(fileURLWithPath: "/book/chapters/my file.md"), fragment: nil))
     }
 
     @Test("External and anchor links")
@@ -199,6 +199,31 @@ struct LinkResolverTests {
     func encoding() {
         let encoded = LinkResolver.encodingSpacesInLinkDestinations("[a](my file.md) and [b](ok.md) and [c](x.md \"title here\")")
         #expect(encoded == "[a](my%20file.md) and [b](ok.md) and [c](x.md \"title here\")")
+    }
+}
+
+// MARK: - Heading anchors
+
+@Suite("Heading slugs")
+struct HeadingSlugTests {
+    @Test("Slugs follow GitHub's rules")
+    func slugs() {
+        #expect(HeadingSlug.slug(for: "Hello, World!") == "hello-world")
+        #expect(HeadingSlug.slug(for: "Status: design, not implementation") == "status-design-not-implementation")
+        #expect(HeadingSlug.slug(for: "snake_case and-dashes") == "snake_case-and-dashes")
+    }
+
+    @Test("Inline markdown is stripped before slugging")
+    func plainText() {
+        #expect(HeadingSlug.plainText(ofHeadingSource: "Using `code` and **bold** ##") == "Using code and bold")
+        #expect(HeadingSlug.plainText(ofHeadingSource: "See [the docs](docs.md)") == "See the docs")
+    }
+
+    @Test("Anchors match headings loosely")
+    func matching() {
+        #expect(HeadingSlug.matches(anchor: "#hello-world", headingText: "Hello World"))
+        #expect(HeadingSlug.matches(anchor: "Hello%20World", headingText: "Hello World"))
+        #expect(!HeadingSlug.matches(anchor: "other", headingText: "Hello World"))
     }
 }
 

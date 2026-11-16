@@ -14,10 +14,10 @@ final class MarkdownTextView: NSTextView {
     )
 
     /// Builds a text view inside a scroll view using an explicit TextKit 1 stack so
-    /// the layout manager delegate can hide glyphs.
+    /// the layout manager delegate can hide glyphs and draw code block panels.
     static func makeScrollable() -> (scrollView: NSScrollView, textView: MarkdownTextView) {
         let storage = NSTextStorage()
-        let layoutManager = NSLayoutManager()
+        let layoutManager = MarkdownLayoutManager()
         layoutManager.allowsNonContiguousLayout = true
         storage.addLayoutManager(layoutManager)
 
@@ -55,6 +55,15 @@ final class MarkdownTextView: NSTextView {
         scrollView.drawsBackground = true
         scrollView.documentView = textView
         return (scrollView, textView)
+    }
+
+    /// Scrolls so the given character range sits at the top of the visible area.
+    func scrollToTop(of range: NSRange) {
+        guard let layoutManager, let textContainer else { return }
+        let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+        let y = max(0, rect.minY + textContainerOrigin.y - textContainerInset.height)
+        scroll(NSPoint(x: 0, y: y))
     }
 
     // MARK: - Task checkboxes
@@ -154,7 +163,8 @@ final class MarkdownTextView: NSTextView {
         if hadNewline { line.removeLast() }
 
         let replacement: String
-        if let hashes = line.prefix(while: { $0 == "#" }).count as Int?, hashes > 0, line.dropFirst(hashes).first == " " || line.count == hashes {
+        let hashes = line.prefix(while: { $0 == "#" }).count
+        if hashes > 0, line.dropFirst(hashes).first == " " || line.count == hashes {
             let next = hashes >= 6 ? 0 : hashes + 1
             let body = String(line.dropFirst(hashes)).trimmingCharacters(in: .whitespaces)
             replacement = next == 0 ? body : String(repeating: "#", count: next) + " " + body

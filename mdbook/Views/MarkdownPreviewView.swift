@@ -12,20 +12,47 @@ struct MarkdownPreviewView: View {
     let text: String
     let documentURL: URL?
     var onOpenLink: (String) -> Void
+    /// Scroll to the heading matching this anchor whenever a new request arrives.
+    var anchorRequest: AnchorRequest? = nil
+    /// When set, follows the editor's scroll position (0...1) in the split layout.
+    var scrollFraction: Double? = nil
 
     @State private var blocks: [MarkdownBlock] = []
+    @State private var headingIDs: [Int: String] = [:]
     @State private var hasRenderedOnce = false
+    @State private var handledAnchorID: UUID?
+    @State private var position = ScrollPosition()
+    @State private var scrollableHeight: CGFloat = 0
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                    MarkdownBlockView(block: block, documentURL: documentURL)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                        MarkdownBlockView(block: block, documentURL: documentURL)
+                            .id(headingIDs[index])
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(28)
+                .textSelection(.enabled)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(28)
-            .textSelection(.enabled)
+            .scrollPosition($position)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                geometry.contentSize.height - geometry.containerSize.height
+            } action: { _, height in
+                scrollableHeight = max(0, height)
+            }
+            .onChange(of: scrollFraction) { _, fraction in
+                guard let fraction else { return }
+                position.scrollTo(y: fraction * scrollableHeight)
+            }
+            .onChange(of: anchorRequest) { _, request in
+                revealAnchor(request, proxy: proxy)
+            }
+            .onChange(of: headingIDs) { _, _ in
+                revealAnchor(anchorRequest, proxy: proxy)
+            }
         }
         .background(Color(nsColor: .textBackgroundColor))
         .environment(\.openURL, OpenURLAction { url in
@@ -43,8 +70,32 @@ struct MarkdownPreviewView: View {
                 MarkdownBlockParser.parse(source)
             }.value
             blocks = parsed
+            headingIDs = Self.headingIDs(for: parsed)
             hasRenderedOnce = true
         }
+    }
+
+    private func revealAnchor(_ request: AnchorRequest?, proxy: ScrollViewProxy) {
+        guard let request, handledAnchorID != request.id, !headingIDs.isEmpty else { return }
+        handledAnchorID = request.id
+        guard let target = headingIDs.values.first(where: { HeadingSlug.matches(anchor: request.anchor, headingText: $0) }) else { return }
+        withAnimation {
+            proxy.scrollTo(target, anchor: .top)
+        }
+    }
+
+    /// GitHub-style ids for top-level headings, de-duplicated with numeric suffixes.
+    private static func headingIDs(for blocks: [MarkdownBlock]) -> [Int: String] {
+        var ids: [Int: String] = [:]
+        var seen: [String: Int] = [:]
+        for (index, block) in blocks.enumerated() {
+            guard case .heading(_, let content) = block else { continue }
+            let base = HeadingSlug.slug(for: String(content.characters))
+            let count = seen[base, default: 0]
+            seen[base] = count + 1
+            ids[index] = count == 0 ? base : "\(base)-\(count)"
+        }
+        return ids
     }
 }
 
@@ -257,7 +308,7 @@ struct MarkdownImageView: View {
                         ProgressView()
                     }
                 }
-            case .file(let url):
+            case .file(let url, _):
                 if let image {
                     Image(nsImage: image)
                         .resizable()

@@ -13,6 +13,10 @@ struct MarkdownEditorView: NSViewRepresentable {
     @Binding var text: String
     var mode: EditorTheme.Mode
     var onOpenLink: (String) -> Void
+    /// Scroll to the heading matching this anchor whenever a new request arrives.
+    var anchorRequest: AnchorRequest? = nil
+    /// Reports the vertical scroll position as a 0...1 fraction (used for split-pane sync).
+    var onScroll: ((Double) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -25,13 +29,18 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.delegate = coordinator
         textView.layoutManager?.delegate = coordinator
         coordinator.configure(textView)
+        coordinator.observeScrolling(of: scrollView)
         textView.string = text
         textView.setSelectedRange(NSRange(location: 0, length: 0))
         coordinator.restyleEverything()
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
-            textView.scroll(.zero)
+            if let request = anchorRequest, coordinator.handledAnchorID != request.id {
+                coordinator.reveal(anchor: request)
+            } else {
+                textView.scroll(.zero)
+            }
         }
         return scrollView
     }
@@ -58,20 +67,32 @@ struct MarkdownEditorView: NSViewRepresentable {
         if needsRestyle {
             coordinator.restyleEverything()
         }
+        if let request = anchorRequest, coordinator.handledAnchorID != request.id {
+            coordinator.reveal(anchor: request)
+        }
     }
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, @preconcurrency NSTextViewDelegate, @preconcurrency NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate {
         var parent: MarkdownEditorView
         weak var textView: MarkdownTextView?
         var theme: EditorTheme
         var isPushingChange = false
+        var handledAnchorID: UUID?
         private var activeParagraph: NSRange?
+        private var spans = MarkdownSpans()
+        private var scrollObserver: NSObjectProtocol?
 
         init(parent: MarkdownEditorView) {
             self.parent = parent
             self.theme = EditorTheme(mode: parent.mode)
+        }
+
+        deinit {
+            if let scrollObserver {
+                NotificationCenter.default.removeObserver(scrollObserver)
+            }
         }
 
         func configure(_ textView: MarkdownTextView) {
@@ -81,6 +102,42 @@ struct MarkdownEditorView: NSViewRepresentable {
             textView.typingAttributes = theme.baseAttributes
             textView.linkTextAttributes = theme.linkTextAttributes
             textView.insertionPointColor = theme.accentColor
+            (textView.layoutManager as? MarkdownLayoutManager)?.codeBlockBackground = theme.codeBackground
+        }
+
+        func observeScrolling(of scrollView: NSScrollView) {
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: nil
+            ) { [weak self, weak scrollView] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let scrollView, let onScroll = self.parent.onScroll,
+                          let document = scrollView.documentView else { return }
+                    let visible = scrollView.contentView.bounds
+                    let scrollable = document.frame.height - visible.height
+                    let fraction = scrollable > 0 ? Double(visible.origin.y / scrollable) : 0
+                    onScroll(min(max(fraction, 0), 1))
+                }
+            }
+        }
+
+        // MARK: Anchors
+
+        func reveal(anchor request: AnchorRequest) {
+            handledAnchorID = request.id
+            guard let textView else { return }
+            let ns = textView.string as NSString
+            guard let heading = spans.headings.first(where: { heading in
+                let source = ns.substring(with: heading.content)
+                return HeadingSlug.matches(anchor: request.anchor, headingText: HeadingSlug.plainText(ofHeadingSource: source))
+            }) else {
+                NSSound.beep()
+                return
+            }
+            textView.setSelectedRange(NSRange(location: heading.line.location, length: 0))
+            textView.scrollToTop(of: heading.line)
         }
 
         // MARK: Styling
@@ -88,7 +145,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         /// Rescans the document and reapplies every attribute.
         func restyleEverything() {
             guard let textView, let storage = textView.textStorage else { return }
-            let spans = MarkdownHighlighter.scan(storage.string)
+            spans = MarkdownHighlighter.scan(storage.string)
             let caretParagraph = paragraphRange(for: textView)
             activeParagraph = caretParagraph
             MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeParagraph: caretParagraph)

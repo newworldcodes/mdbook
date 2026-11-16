@@ -77,6 +77,7 @@ struct FileNodeRow: View {
             }
             .contextMenu {
                 Button("New File Here…") { model.requestNewFile(in: node.url) }
+                Button("Rename…") { model.requestRename(node) }
                 Button("Reveal in Finder") { model.revealInFinder(node.url) }
                 Divider()
                 Button("Move to Trash", role: .destructive) { model.nodePendingDeletion = node }
@@ -85,6 +86,7 @@ struct FileNodeRow: View {
             Label(node.name, systemImage: "doc.text")
                 .tag(node.url)
                 .contextMenu {
+                    Button("Rename…") { model.requestRename(node) }
                     Button("Reveal in Finder") { model.revealInFinder(node.url) }
                     Divider()
                     Button("Move to Trash", role: .destructive) { model.nodePendingDeletion = node }

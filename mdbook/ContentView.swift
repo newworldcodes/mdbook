@@ -52,6 +52,24 @@ struct ContentView: View {
 
             ToolbarItem(placement: .automatic) {
                 if model.selection != nil {
+                    Menu {
+                        ForEach(model.outline) { entry in
+                            Button {
+                                model.jump(to: entry)
+                            } label: {
+                                Text(String(repeating: "    ", count: max(0, entry.level - 1)) + entry.title)
+                            }
+                        }
+                    } label: {
+                        Label("Outline", systemImage: "list.bullet.indent")
+                    }
+                    .disabled(model.outline.isEmpty)
+                    .help("Jump to a heading in this document")
+                }
+            }
+
+            ToolbarItem(placement: .automatic) {
+                if model.selection != nil {
                     Text(model.isDirty ? "Unsaved" : "Saved")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -80,6 +98,13 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) { model.newFileFolder = nil }
         } message: {
             Text("Enter a name for the new markdown file.")
+        }
+        .alert("Rename", isPresented: renameBinding) {
+            TextField("Name", text: $model.renameName)
+            Button("Rename") { model.renamePendingNode() }
+            Button("Cancel", role: .cancel) { model.nodePendingRename = nil }
+        } message: {
+            Text("Enter a new name for \u{201C}\(model.nodePendingRename?.name ?? "")\u{201D}.")
         }
         .confirmationDialog(
             "Move \u{201C}\(model.nodePendingDeletion?.name ?? "")\u{201D} to the Trash?",
@@ -110,6 +135,13 @@ struct ContentView: View {
         )
     }
 
+    private var renameBinding: Binding<Bool> {
+        Binding(
+            get: { model.nodePendingRename != nil },
+            set: { if !$0 { model.nodePendingRename = nil } }
+        )
+    }
+
     private var deleteBinding: Binding<Bool> {
         Binding(
             get: { model.nodePendingDeletion != nil },
@@ -121,19 +153,37 @@ struct ContentView: View {
 /// The detail column: WYSIWYG editor or source + preview split.
 struct DocumentAreaView: View {
     @Bindable var model: ProjectModel
+    @State private var sourceScrollFraction: Double?
 
     var body: some View {
         if let selection = model.selection {
             Group {
                 switch model.layout {
                 case .wysiwyg:
-                    MarkdownEditorView(text: textBinding, mode: .wysiwyg, onOpenLink: model.open(linkDestination:))
+                    MarkdownEditorView(
+                        text: textBinding,
+                        mode: .wysiwyg,
+                        onOpenLink: model.open(linkDestination:),
+                        anchorRequest: model.pendingAnchor
+                    )
                 case .split:
                     HSplitView {
-                        MarkdownEditorView(text: textBinding, mode: .source, onOpenLink: model.open(linkDestination:))
-                            .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
-                        MarkdownPreviewView(text: model.text, documentURL: selection, onOpenLink: model.open(linkDestination:))
-                            .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+                        MarkdownEditorView(
+                            text: textBinding,
+                            mode: .source,
+                            onOpenLink: model.open(linkDestination:),
+                            anchorRequest: model.pendingAnchor,
+                            onScroll: { sourceScrollFraction = $0 }
+                        )
+                        .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
+                        MarkdownPreviewView(
+                            text: model.text,
+                            documentURL: selection,
+                            onOpenLink: model.open(linkDestination:),
+                            anchorRequest: model.pendingAnchor,
+                            scrollFraction: sourceScrollFraction
+                        )
+                        .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             }
