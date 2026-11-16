@@ -98,21 +98,11 @@ struct ContentView: View {
 
             ToolbarItem(placement: .automatic) {
                 if model.selection != nil {
-                    Text("\(model.wordCount.formatted()) words · \(model.readingMinutes) min")
-                        .font(.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .help("Word count and reading time for this chapter")
-                }
-            }
-
-            ToolbarItem(placement: .automatic) {
-                if model.selection != nil {
-                    Text(model.isDirty ? "Unsaved" : "Saved")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(minWidth: 50)
-                        .accessibilityLabel(model.isDirty ? "Unsaved changes" : "All changes saved")
+                    DocumentStatusView(
+                        words: model.wordCount,
+                        minutes: model.readingMinutes,
+                        isDirty: model.isDirty
+                    )
                 }
             }
 
@@ -131,6 +121,32 @@ struct ContentView: View {
         }
     }
 
+}
+
+/// Word count, reading time and save state, as one fixed-width toolbar item so the
+/// toolbar neither truncates it nor lets the two halves drift apart.
+struct DocumentStatusView: View {
+    let words: Int
+    let minutes: Int
+    let isDirty: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("\(words.formatted()) words · \(minutes) min")
+                .monospacedDigit()
+                .help("Word count and reading time for this chapter")
+            Divider()
+                .frame(height: 12)
+            Text(isDirty ? "Unsaved" : "Saved")
+                .frame(minWidth: 46, alignment: .leading)
+                .accessibilityLabel(isDirty ? "Unsaved changes" : "All changes saved")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 8)
+    }
 }
 
 /// The project's alerts and confirmations: external changes, errors, new file, rename, delete.

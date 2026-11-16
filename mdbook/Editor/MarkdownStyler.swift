@@ -72,12 +72,19 @@ struct MarkdownStyler {
                 storage.addAttribute(.cursor, value: NSCursor.pointingHand, range: task)
             }
             if theme.mode == .wysiwyg {
-                // Wrapped lines align with the start of the item text.
+                // Each nesting level steps in clearly, whatever spacing the source uses;
+                // wrapped lines align with the start of the item text.
                 let style = mutableParagraphStyle()
-                let indent = CGFloat(item.indent) * 8
+                let indent = CGFloat(item.depth) * listIndent
                 let markerWidth = width(of: NSRange(location: item.marker.location, length: NSMaxRange(item.task ?? item.marker) - item.marker.location), in: storage)
-                style.firstLineHeadIndent = indent
-                style.headIndent = indent + markerWidth + (item.task == nil ? 0 : width(of: " ", font: theme.baseFont))
+                // The source's own leading spaces are drawn too; take them out of the indent so
+                // every level sits exactly `listIndent` deeper.
+                var leadingStart = item.marker.location
+                let ns = storage.string as NSString
+                while leadingStart > item.line.location, [0x20, 0x09].contains(ns.character(at: leadingStart - 1)) { leadingStart -= 1 }
+                let leadingWidth = width(of: NSRange(location: leadingStart, length: item.marker.location - leadingStart), in: storage)
+                style.firstLineHeadIndent = max(0, indent - leadingWidth)
+                style.headIndent = max(indent, leadingWidth) + markerWidth + (item.task == nil ? 0 : width(of: " ", font: theme.baseFont))
                 style.paragraphSpacing = 2
                 storage.addAttribute(.paragraphStyle, value: style, range: item.line)
             }
@@ -267,6 +274,9 @@ struct MarkdownStyler {
         }
         storage.addAttribute(.markdownBlockRendering, value: rendering, range: range)
     }
+
+    /// Indent per list nesting level.
+    var listIndent: CGFloat { 24 * theme.scale }
 
     // MARK: - Block quotes
 

@@ -41,6 +41,8 @@ nonisolated struct MarkdownSpans: Sendable {
         var ordered: Bool
         /// The `[ ]` / `[x]` checkbox, if the item is a task.
         var task: NSRange?
+        /// Nesting level: 0 for a top-level item, 1 inside another item, and so on.
+        var depth: Int = 0
     }
 
     struct Link: Sendable {
@@ -232,6 +234,7 @@ private nonisolated struct SpanWalker: MarkupWalker {
     private var leaf: (line: Int, column: Int, quoteDepth: Int)?
     private var quoteDepth = 0
     private var linkDepth = 0
+    private var listDepth = 0
     /// Set while inside a table header that cmark mis-placed onto the line of the paragraph
     /// it interrupted. See `MarkdownSourceMap.offset(flowingFrom:)`.
     private var headerFlowsFromLine: Int?
@@ -430,7 +433,11 @@ private nonisolated struct SpanWalker: MarkupWalker {
     }
 
     mutating func visitListItem(_ listItem: ListItem) {
-        defer { descendInto(listItem) }
+        defer {
+            listDepth += 1
+            descendInto(listItem)
+            listDepth -= 1
+        }
         guard let range = listItem.range else { return }
         let line = map.lineRange(range.lowerBound.line)
         let start = map.offset(range.lowerBound)
@@ -453,7 +460,7 @@ private nonisolated struct SpanWalker: MarkupWalker {
         let quotePrefix = Self.quoteMarkers.firstMatch(in: text, options: .anchored, range: prefix)?.range ?? NSRange(location: line.location, length: 0)
         let indent = prefix.length - quotePrefix.length
 
-        spans.listItems.append(.init(line: line, marker: marker, indent: indent, ordered: listItem.parent is OrderedList, task: task))
+        spans.listItems.append(.init(line: line, marker: marker, indent: indent, ordered: listItem.parent is OrderedList, task: task, depth: listDepth))
     }
 
     mutating func visitTable(_ table: Markdown.Table) {

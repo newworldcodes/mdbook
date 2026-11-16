@@ -48,6 +48,7 @@ nonisolated enum IncrementalStyling {
             hasher.combine(item.indent)
             hasher.combine(item.ordered)
             hasher.combine(item.task?.location)
+            hasher.combine(item.depth)
             add(3, item.line, hasher.finalize())
         }
         for table in spans.tables { add(4, table.range, table.pipes.count) }
@@ -134,7 +135,7 @@ extension MarkdownSpans {
         spans.headings = headings.map { .init(level: $0.level, line: map($0.line), content: map($0.content)) }
         spans.codeBlocks = codeBlocks.map { .init(range: map($0.range), fenceLines: $0.fenceLines.map(map), language: $0.language) }
         spans.blockQuotes = blockQuotes.map { .init(line: map($0.line), marker: map($0.marker), depth: $0.depth) }
-        spans.listItems = listItems.map { .init(line: map($0.line), marker: map($0.marker), indent: $0.indent, ordered: $0.ordered, task: $0.task.map(map)) }
+        spans.listItems = listItems.map { .init(line: map($0.line), marker: map($0.marker), indent: $0.indent, ordered: $0.ordered, task: $0.task.map(map), depth: $0.depth) }
         spans.tables = tables.map {
             .init(range: map($0.range), headerLine: map($0.headerLine), delimiterLine: map($0.delimiterLine), lines: $0.lines.map(map), pipes: $0.pipes.map(map))
         }
