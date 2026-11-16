@@ -132,6 +132,16 @@ struct MarkdownHighlighterTests {
         #expect(spans.inlineCode.count == 1)
     }
 
+    @Test("Emphasis can wrap code spans and links")
+    func compoundStyles() {
+        let text = "**Supersedes `notes.md` point #11** and *see [docs](d.md)*"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.bold == [range(of: "Supersedes `notes.md` point #11", in: text)])
+        #expect(spans.inlineCode == [range(of: "notes.md", in: text)])
+        #expect(spans.italic == [range(of: "see [docs](d.md)", in: text)])
+        #expect(spans.links.count == 1)
+    }
+
     @Test("Links and images")
     func links() {
         let text = "[Next](chapter2.md) ![pic](a.png) <https://x.org> https://y.org/path"

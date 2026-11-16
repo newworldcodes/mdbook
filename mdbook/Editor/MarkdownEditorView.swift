@@ -203,9 +203,18 @@ struct MarkdownEditorView: NSViewRepresentable {
             spans = MarkdownHighlighter.scan(storage.string)
             let caretParagraph = paragraphRange(for: textView)
             activeParagraph = caretParagraph
-            MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeParagraph: caretParagraph)
+            MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeRegion: activeRegion(for: caretParagraph))
             invalidateGlyphs(in: NSRange(location: 0, length: storage.length), textView: textView)
             textView.typingAttributes = theme.baseAttributes
+        }
+
+        /// The paragraph itself, or the whole table when the paragraph is a table row:
+        /// tables switch between rendered grid and editable source as a unit.
+        private func activeRegion(for paragraph: NSRange) -> NSRange {
+            if let table = spans.tables.first(where: { $0.contains(paragraph.location) }) {
+                return table.range
+            }
+            return paragraph
         }
 
         /// Called when the caret moves: reveal markers in the new paragraph and hide
@@ -215,6 +224,14 @@ struct MarkdownEditorView: NSViewRepresentable {
             let newRange = paragraphRange(for: textView)
             guard newRange != activeParagraph else { return }
             formatTableIfLeft(from: activeParagraph, to: newRange)
+
+            // Entering or leaving a table changes fonts and kerning, so restyle fully.
+            let oldInTable = activeParagraph.map { activeRegion(for: $0) != $0 } ?? false
+            let newInTable = activeRegion(for: newRange) != newRange
+            if oldInTable || newInTable {
+                restyleEverything()
+                return
+            }
             let styler = MarkdownStyler(theme: theme)
             if let old = activeParagraph, NSMaxRange(old) <= storage.length {
                 styler.setMarkersVisible(false, in: old, storage: storage)

@@ -12,6 +12,7 @@ enum SampleMarkdown {
     # Chapter One
 
     Welcome to **mdbook**, a *markdown* reader with ~~rough~~ smooth editing and `inline code`.
+    **Supersedes `grammar-script-notes.md` point #11** and *italic with a [link](x.md) inside*.
     See the [next chapter](chapter-two.md) or visit <https://example.com>.
 
     ## Tasks
@@ -28,10 +29,10 @@ enum SampleMarkdown {
     print(greeting)
     ```
 
-    | Feature | Status |
-    |:--------|-------:|
-    | Tables  | done   |
-    | Images  | done   |
+    | Feature | Status | Notes |
+    |:--------|-------:|:-----:|
+    | Tables  | done   | Rendered as a grid with **bold** and `code` cells |
+    | Images  | done   | preview only |
 
     ---
 

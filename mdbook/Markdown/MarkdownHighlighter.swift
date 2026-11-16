@@ -333,41 +333,66 @@ nonisolated enum MarkdownHighlighter {
             protected.append(match.range)
         }
 
-        for match in patterns.boldItalic.matches(in: text, range: range) where isFree(match.range) {
-            let content = match.range(at: 2)
+        // Emphasis may wrap code spans and links, but must not start or end inside them.
+        // Mask the protected ranges with a neutral letter so the emphasis regexes neither
+        // see their contents nor fail their non-whitespace lookarounds at the boundary.
+        let masked = NSMutableString(string: ns.substring(with: range))
+        for protectedRange in protected {
+            let local = NSIntersectionRange(protectedRange, range)
+            guard local.length > 0 else { continue }
+            masked.replaceCharacters(
+                in: NSRange(location: local.location - range.location, length: local.length),
+                with: String(repeating: "x", count: local.length)
+            )
+        }
+        let maskedString = masked as String
+        let maskedRange = NSRange(location: 0, length: masked.length)
+        let offset = range.location
+
+        for match in patterns.boldItalic.matches(in: maskedString, range: maskedRange) {
+            let content = shifted(match.range(at: 2), by: offset)
+            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
             spans.bold.append(content)
             spans.italic.append(content)
-            appendDelimiters(match, content: content, into: &spans, protected: &protected)
         }
 
-        for match in patterns.bold.matches(in: text, range: range) where isFree(match.range) {
-            let content = match.range(at: 2)
+        for match in patterns.bold.matches(in: maskedString, range: maskedRange) {
+            let content = shifted(match.range(at: 2), by: offset)
+            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
             spans.bold.append(content)
-            appendDelimiters(match, content: content, into: &spans, protected: &protected)
         }
 
         for regex in [patterns.italicStar, patterns.italicUnderscore] {
-            for match in regex.matches(in: text, range: range) where isFree(match.range) {
-                let content = match.range(at: 1)
+            for match in regex.matches(in: maskedString, range: maskedRange) {
+                let content = shifted(match.range(at: 1), by: offset)
+                guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
                 spans.italic.append(content)
-                appendDelimiters(match, content: content, into: &spans, protected: &protected)
             }
         }
 
-        for match in patterns.strikethrough.matches(in: text, range: range) where isFree(match.range) {
-            let content = match.range(at: 1)
+        for match in patterns.strikethrough.matches(in: maskedString, range: maskedRange) {
+            let content = shifted(match.range(at: 1), by: offset)
+            guard addDelimiters(of: shifted(match.range, by: offset), around: content, into: &spans, protected: &protected) else { continue }
             spans.strikethrough.append(content)
-            appendDelimiters(match, content: content, into: &spans, protected: &protected)
         }
     }
 
-    /// Records the opening and closing delimiters around `content` as hideable markers.
-    private static func appendDelimiters(_ match: NSTextCheckingResult, content: NSRange, into spans: inout MarkdownSpans, protected: inout [NSRange]) {
-        let opening = NSRange(location: match.range.location, length: content.location - match.range.location)
-        let closing = NSRange(location: NSMaxRange(content), length: NSMaxRange(match.range) - NSMaxRange(content))
+    private static func shifted(_ range: NSRange, by offset: Int) -> NSRange {
+        NSRange(location: range.location + offset, length: range.length)
+    }
+
+    /// Records the opening and closing delimiters around `content` as hideable markers,
+    /// unless either delimiter overlaps something already claimed (e.g. an earlier
+    /// emphasis run), in which case nothing is recorded and `false` is returned.
+    private static func addDelimiters(of match: NSRange, around content: NSRange, into spans: inout MarkdownSpans, protected: inout [NSRange]) -> Bool {
+        let opening = NSRange(location: match.location, length: content.location - match.location)
+        let closing = NSRange(location: NSMaxRange(content), length: NSMaxRange(match) - NSMaxRange(content))
+        let isFree = !protected.contains { NSIntersectionRange($0, opening).length > 0 || NSIntersectionRange($0, closing).length > 0 }
+        guard isFree else { return false }
         spans.markers.append(opening)
         spans.markers.append(closing)
         protected.append(opening)
         protected.append(closing)
+        return true
     }
 }
