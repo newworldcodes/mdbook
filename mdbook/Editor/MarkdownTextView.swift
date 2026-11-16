@@ -163,6 +163,176 @@ final class MarkdownTextView: NSTextView {
         insertText("\n" + indent + marker + spacing + task, replacementRange: selection)
     }
 
+    // MARK: - Link completion
+
+    /// Supplies link destinations (chapter paths and `#anchors`) for the text typed so far.
+    var linkCompletions: ((String) -> [String])?
+
+    /// The destination being typed inside `[text](…`, if the caret is in one.
+    private var linkDestinationRange: NSRange? {
+        let ns = string as NSString
+        let caret = selectedRange()
+        guard caret.length == 0, caret.location > 1 else { return nil }
+        let lineStart = ns.lineRange(for: NSRange(location: caret.location, length: 0)).location
+        var index = caret.location
+        while index > lineStart {
+            let character = ns.character(at: index - 1)
+            if character == 0x28, index - 2 >= lineStart, ns.character(at: index - 2) == 0x5D { // "](" 
+                return NSRange(location: index, length: caret.location - index)
+            }
+            // Destinations have no spaces or closing parentheses.
+            if character == 0x20 || character == 0x29 || character == 0x09 { return nil }
+            index -= 1
+        }
+        return nil
+    }
+
+    override var rangeForUserCompletion: NSRange {
+        linkDestinationRange ?? super.rangeForUserCompletion
+    }
+
+    override func completions(forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>) -> [String]? {
+        guard let destination = linkDestinationRange, destination == charRange, let linkCompletions else {
+            return super.completions(forPartialWordRange: charRange, indexOfSelectedItem: index)
+        }
+        index.pointee = -1
+        return linkCompletions((string as NSString).substring(with: charRange))
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        super.insertText(insertString, replacementRange: replacementRange)
+        // Offer destinations as soon as a link's `](` or an anchor's `#` is typed.
+        guard let typed = (insertString as? String) ?? (insertString as? NSAttributedString)?.string,
+              typed == "(" || typed == "#", linkCompletions != nil, linkDestinationRange != nil else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.linkDestinationRange != nil else { return }
+            self.complete(nil)
+        }
+    }
+
+    // MARK: - List indentation
+
+    override func insertTab(_ sender: Any?) {
+        if !shiftListItems(outdent: false) { super.insertTab(sender) }
+    }
+
+    override func insertBacktab(_ sender: Any?) {
+        if !shiftListItems(outdent: true) { super.insertBacktab(sender) }
+    }
+
+    /// A parsed list item line.
+    private struct ListLine {
+        var indent: Int
+        var marker: String
+        /// The marker plus the spacing after it: how far nested content must be indented.
+        var contentOffset: Int
+        var number: Int?
+        var delimiter: String
+        var rest: String
+    }
+
+    private static func parseListLine(_ line: String) -> ListLine? {
+        let ns = line as NSString
+        guard let pattern = listItemPattern,
+              let match = pattern.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let indent = ns.substring(with: match.range(at: 1)).reduce(0) { $0 + ($1 == "\t" ? 4 : 1) }
+        let number = match.range(at: 3).location == NSNotFound ? nil : Int(ns.substring(with: match.range(at: 3)))
+        let delimiter = match.range(at: 4).location == NSNotFound ? "" : ns.substring(with: match.range(at: 4))
+        let rest = ns.substring(from: match.range(at: 5).location)
+        return ListLine(
+            indent: indent,
+            marker: ns.substring(with: match.range(at: 2)),
+            contentOffset: match.range(at: 2).length + match.range(at: 5).length,
+            number: number,
+            delimiter: delimiter,
+            rest: rest
+        )
+    }
+
+    /// Indents (Tab) or outdents (Shift-Tab) every list item the selection touches.
+    /// Returns false, leaving the key to the default behaviour, unless all of the
+    /// non-blank selected lines are list items.
+    private func shiftListItems(outdent: Bool) -> Bool {
+        let ns = string as NSString
+        let selection = selectedRange()
+        let span = ns.lineRange(for: selection)
+        var lines: [String] = []
+        ns.enumerateSubstrings(in: span, options: [.byLines]) { line, _, _, _ in lines.append(line ?? "") }
+        if lines.isEmpty { lines = [""] }
+        let parsed = lines.map(Self.parseListLine)
+        guard parsed.contains(where: { $0 != nil }),
+              zip(lines, parsed).allSatisfy({ $1 != nil || $0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return false }
+
+        // The list items above the selection give the levels to indent to or out to.
+        var context = listContext(above: span.location, in: ns)
+        var output: [String] = []
+        for (line, item) in zip(lines, parsed) {
+            guard var item else {
+                output.append(line)
+                continue
+            }
+            let siblingAtLevel = { (indent: Int) in context.last { $0.indent == indent } }
+            if outdent {
+                guard item.indent > 0 else {
+                    output.append(line)
+                    context.append(item)
+                    continue
+                }
+                let parent = context.last { $0.indent < item.indent }
+                item.indent = parent?.indent ?? 0
+                if item.number != nil { item.number = (siblingAtLevel(item.indent)?.number ?? 0) + 1 }
+            } else {
+                let sibling = siblingAtLevel(item.indent)
+                item.indent += sibling?.contentOffset ?? item.contentOffset
+                if item.number != nil { item.number = (siblingAtLevel(item.indent)?.number ?? 0) + 1 }
+            }
+            context.removeAll { $0.indent > item.indent }
+            context.append(item)
+            let marker = item.number.map { "\($0)\(item.delimiter)" } ?? item.marker
+            output.append(String(repeating: " ", count: item.indent) + marker + item.rest)
+        }
+
+        let hadTerminator = span.length > 0 && [0x0A, 0x0D].contains(ns.character(at: NSMaxRange(span) - 1))
+        let replacement = output.joined(separator: "\n") + (hadTerminator ? "\n" : "")
+        let firstDelta = (output.first as NSString?)?.length ?? 0
+        let lineDelta = firstDelta - ((lines.first as NSString?)?.length ?? 0)
+        insertText(replacement, replacementRange: span)
+
+        if selection.length == 0 {
+            // Keep the caret on the same character of the item's text.
+            let location = max(span.location, selection.location + lineDelta)
+            setSelectedRange(NSRange(location: min(location, (string as NSString).length), length: 0))
+        } else {
+            let newLength = (replacement as NSString).length - (hadTerminator ? 1 : 0)
+            setSelectedRange(NSRange(location: span.location, length: newLength))
+        }
+        return true
+    }
+
+    /// The nearest list item at each level above `location`, outermost first. Scanning
+    /// up, items deeper than one already seen belong to other branches and are skipped;
+    /// an unindented line that isn't a list item is where the list starts.
+    private func listContext(above location: Int, in ns: NSString) -> [ListLine] {
+        var nearest: [Int: ListLine] = [:]
+        var shallowest = Int.max
+        var end = location
+        var scanned = 0
+        while end > 0, scanned < 500 {
+            let lineRange = ns.lineRange(for: NSRange(location: end - 1, length: 0))
+            let line = ns.substring(with: lineRange).trimmingCharacters(in: .newlines)
+            end = lineRange.location
+            scanned += 1
+            if let item = Self.parseListLine(line) {
+                guard item.indent <= shallowest else { continue }
+                if nearest[item.indent] == nil { nearest[item.indent] = item }
+                shallowest = item.indent
+            } else if !line.trimmingCharacters(in: .whitespaces).isEmpty, !line.hasPrefix(" "), !line.hasPrefix("\t") {
+                break
+            }
+        }
+        return nearest.values.sorted { $0.indent < $1.indent }
+    }
+
     // MARK: - Formatting actions (reached through the responder chain)
 
     /// Set by the editor coordinator, which knows where the tables are.

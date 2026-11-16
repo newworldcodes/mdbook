@@ -38,7 +38,8 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | Area | Files | Notes |
 |---|---|---|
 | App shell | `mdbookApp.swift`, `AppDelegate.swift`, `ContentView.swift` | `NavigationSplitView`, toolbar (back/forward, layout picker, outline menu, save state), menus (File, Format, View, Go). AppDelegate owns the model and handles folders/files opened from Finder or `open -a`. |
-| Project model | `Models/ProjectModel.swift` | `@Observable`. Folder tree, selection, autosave (1 s debounce + ⌘S + flush on resign/terminate), history, link opening, new/rename/trash, outline, anchors, FSEvents watcher (`FolderWatcher.swift`). Persists the last project as a security-scoped bookmark. Standalone-file mode when only a file was granted by the sandbox. |
+| Files on disk | `Models/TextFile.swift` | Encoding detection (UTF-8/BOM, UTF-16, Windows-1252, Latin-1); files are saved in the encoding they were read in (UTF-8 if it can no longer represent the text). |
+| Project model | `Models/ProjectModel.swift` | `@Observable`. Folder tree, selection, autosave (1 s debounce + ⌘S + flush on resign/terminate), history, link opening, new/rename/trash, outline, anchors, FSEvents watcher (`FolderWatcher.swift`). Keeps `diskText` (the file as last read/written): autosave never overwrites a file another app changed; with unsaved edits the user picks a version (`externalChange` alert), and on a file switch the edits go to a "conflicted copy". Persists the last project as a security-scoped bookmark. Standalone-file mode when only a file was granted by the sandbox. |
 | File tree | `Models/FileNode.swift` | Markdown files plus folders that contain them. Folders first, natural sort. |
 | Book structure | `Markdown/BookSummary.swift`, model "Chapters" section | mdBook SUMMARY.md (root, `book.toml`'s `src`, or `src/`): prefix/numbered/nested/draft/suffix chapters, parts, separators. Drives the sidebar's Contents (files collapse under "Files"), the reading order (sidebar order without a summary) and previous/next chapter (Go menu ⌥⌘←/→, toolbar, preview footer). |
 | Sidebar | `Views/ProjectSidebarView.swift` | Recursive `DisclosureGroup`s bound to `expandedFolders`; context menus. Shows search results instead while the search field has a query. |
@@ -87,6 +88,10 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 - Dropping or pasting image files links them where they are if they're inside the
   document's folder, else copies them into `images/` beside the document; pasted image data
   is saved there as a PNG. Pasting a URL over selected text makes a link.
+- Editing helpers in `MarkdownTextView`: Return continues lists; Tab/Shift-Tab indent and
+  outdent list items (nesting by the sibling's marker width, renumbering ordered items);
+  typing `](` or `#` in a link destination opens completion (chapter paths relative to the
+  document, `#heading` slugs; the coordinator's `linkCompletions(for:)` supplies them).
 - Typing attributes are scrubbed on every selection change so links, hidden flags and
   strikethrough never leak into new text.
 - `isRichText = false`, smart quotes/dashes off, spell check off by default.
@@ -164,11 +169,9 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 1. Images inside running text in the WYSIWYG view (block image lines are done).
 2. Incremental restyling for large files (or adopt STTextView).
-3. Tab/Shift-Tab list indentation.
-4. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
-5. Export to HTML/PDF, printing, copy as rich text.
-6. Footnotes, math, Mermaid, emoji shortcodes.
-7. Tests for the coordinator, autosave, rename and history.
+3. Export to HTML/PDF, printing, copy as rich text.
+4. Footnotes, math, Mermaid, emoji shortcodes.
+5. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a

@@ -15,6 +15,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     var onOpenLink: (String) -> Void
     /// The file being edited, for resolving relative image paths and saving dropped images.
     var documentURL: URL? = nil
+    /// The project's markdown files, offered when typing a link destination.
+    var projectFiles: [URL] = []
     /// Scroll to the heading matching this anchor whenever a new request arrives.
     var anchorRequest: AnchorRequest? = nil
     /// Select and scroll to this range whenever a new request arrives.
@@ -115,6 +117,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         func configure(_ textView: MarkdownTextView) {
             textView.onFormatTable = { [weak self] in self?.formatTableAtCaret() }
             textView.onWidthChange = { [weak self] in self?.widthDidChange() }
+            textView.linkCompletions = { [weak self] partial in self?.linkCompletions(for: partial) ?? [] }
             textView.textContainerInset = theme.textContainerInset
             textView.font = theme.baseFont
             textView.textColor = theme.textColor
@@ -307,6 +310,48 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
             }
             return found
+        }
+
+        // MARK: Link completion
+
+        /// Destinations matching what's been typed after `](`: chapter paths relative to this
+        /// document and `#anchors` for its headings, or after `file.md#`, that file's headings.
+        func linkCompletions(for partial: String) -> [String] {
+            let document = parent.documentURL
+            if let hash = partial.firstIndex(of: "#") {
+                let filePart = String(partial[..<hash])
+                let anchorPart = String(partial[partial.index(after: hash)...])
+                let slugs: [String]
+                if filePart.isEmpty {
+                    slugs = headingSlugs(in: textView?.string ?? "")
+                } else if case .file(let url, _) = LinkResolver.resolve(filePart, relativeTo: document),
+                          let source = try? TextFile.read(url).text {
+                    slugs = headingSlugs(in: source)
+                } else {
+                    slugs = []
+                }
+                return slugs.filter { anchorPart.isEmpty || $0.localizedCaseInsensitiveContains(anchorPart) }
+                    .map { filePart + "#" + $0 }
+            }
+
+            var candidates: [String] = []
+            if let document {
+                candidates += parent.projectFiles
+                    .filter { $0.standardizedFileURL != document.standardizedFileURL }
+                    .map { LinkResolver.relativePath(from: document, to: $0) }
+            }
+            candidates += headingSlugs(in: textView?.string ?? "").map { "#" + $0 }
+            guard !partial.isEmpty else { return candidates }
+            return candidates.filter { $0.localizedCaseInsensitiveContains(partial) }
+        }
+
+        private func headingSlugs(in source: String) -> [String] {
+            let ns = source as NSString
+            var seen = Set<String>()
+            return MarkdownHighlighter.scan(source).headings
+                .sorted { $0.line.location < $1.line.location }
+                .map { HeadingSlug.slug(for: HeadingSlug.plainText(ofHeadingSource: ns.substring(with: $0.content))) }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
         }
 
         // MARK: Images

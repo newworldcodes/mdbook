@@ -64,6 +64,14 @@ final class ProjectModel {
 
     private(set) var text: String = ""
     private(set) var isDirty = false
+    /// The open file's contents as last read from or written to disk, to tell our own saves
+    /// apart from changes made by other apps.
+    @ObservationIgnored private var diskText: String?
+    /// The open file's encoding, kept when saving.
+    private(set) var fileEncoding: String.Encoding = .utf8
+    /// Set when the open file changed on disk while there are unsaved edits; saving pauses
+    /// until the user picks a version.
+    private(set) var externalChange: URL?
     private(set) var lastSaveError: String?
 
     var layout: EditorLayout {
@@ -255,7 +263,7 @@ final class ProjectModel {
 
     private func reloadSummary() {
         guard let rootURL, standaloneFile == nil, let url = BookSummary.locate(in: rootURL),
-              let source = try? String(contentsOf: url, encoding: .utf8) else {
+              let source = try? TextFile.read(url).text else {
             summary = nil
             summaryURL = nil
             return
@@ -353,15 +361,22 @@ final class ProjectModel {
 
     private func loadSelectedFile() {
         flushPendingSave()
+        externalChange = nil
         guard let url = selection else {
             text = ""
+            diskText = nil
             isDirty = false
             return
         }
         do {
-            text = try String(contentsOf: url, encoding: .utf8)
+            let file = try TextFile.read(url)
+            text = file.text
+            fileEncoding = file.encoding
+            diskText = file.text
         } catch {
             text = ""
+            diskText = nil
+            fileEncoding = .utf8
             errorMessage = "Couldn't read \(url.lastPathComponent): \(error.localizedDescription)"
         }
         isDirty = false
@@ -389,9 +404,23 @@ final class ProjectModel {
     func saveNow() {
         saveTask?.cancel()
         saveTask = nil
-        guard isDirty, let url = selection else { return }
+        guard isDirty, let url = selection, externalChange == nil else { return }
+        // Never overwrite a change another app made since we last read or wrote the file.
+        if let onDisk = try? TextFile.read(url).text, let diskText, onDisk != diskText {
+            externalChange = url
+            return
+        }
+        write(to: url)
+    }
+
+    private func write(to url: URL) {
         do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
+            let used = try TextFile.write(text, to: url, encoding: fileEncoding)
+            if used != fileEncoding {
+                errorMessage = "\(url.lastPathComponent) was saved as UTF-8 because its original encoding can't represent some of the new text."
+                fileEncoding = used
+            }
+            diskText = text
             isDirty = false
             lastSaveError = nil
         } catch {
@@ -401,8 +430,22 @@ final class ProjectModel {
     }
 
     /// Writes any pending edits for the current file before switching away or quitting.
+    /// If the file changed on disk meanwhile, the edits go to a conflicted copy beside it
+    /// rather than being lost or overwriting the other change.
     func flushPendingSave() {
-        if isDirty { saveNow() }
+        guard isDirty else { return }
+        saveNow()
+        guard let url = externalChange, url == selection else { return }
+        let copy = url.deletingPathExtension()
+            .appendingPathExtension("conflicted copy")
+            .appendingPathExtension(url.pathExtension)
+        if (try? TextFile.write(text, to: copy, encoding: fileEncoding)) != nil {
+            errorMessage = "\(url.lastPathComponent) changed on disk while you had unsaved edits. Your version was saved as \(copy.lastPathComponent)."
+        } else {
+            errorMessage = "\(url.lastPathComponent) changed on disk and your unsaved edits couldn't be saved."
+        }
+        externalChange = nil
+        isDirty = false
     }
 
     // MARK: - Navigation
@@ -618,12 +661,35 @@ final class ProjectModel {
         reloadCurrentFileIfChangedOnDisk()
     }
 
-    /// Picks up edits made by other apps, as long as we have no unsaved changes of our own.
+    /// Picks up edits made by other apps. With unsaved edits of our own, asks which to keep.
     private func reloadCurrentFileIfChangedOnDisk() {
-        guard !isDirty, let url = selection,
-              let onDisk = try? String(contentsOf: url, encoding: .utf8),
-              onDisk != text else { return }
-        text = onDisk
+        guard let url = selection, let onDisk = try? TextFile.read(url).text,
+              onDisk != diskText else { return }
+        if isDirty, onDisk != text {
+            externalChange = url
+        } else {
+            text = onDisk
+            diskText = onDisk
+            isDirty = false
+        }
+    }
+
+    /// Resolves an external change: keep the edits here (overwriting the file) or take the
+    /// version on disk (discarding them).
+    func resolveExternalChange(keepMine: Bool) {
+        guard let url = externalChange, url == selection else {
+            externalChange = nil
+            return
+        }
+        externalChange = nil
+        if keepMine {
+            write(to: url)
+        } else if let file = try? TextFile.read(url) {
+            text = file.text
+            fileEncoding = file.encoding
+            diskText = file.text
+            isDirty = false
+        }
     }
 }
 

@@ -42,7 +42,7 @@ nonisolated enum ProjectSearch {
         var nextID = 0
         for file in files {
             guard total < maximumMatches, !Task.isCancelled else { break }
-            guard let text = file.text ?? (try? String(contentsOf: file.url, encoding: .utf8)) else { continue }
+            guard let text = file.text ?? (try? TextFile.read(file.url).text) else { continue }
             let matches = search(needle, in: text, limit: min(maximumMatchesPerFile, maximumMatches - total), firstID: nextID)
             guard !matches.isEmpty else { continue }
             results.append(FileResult(url: file.url, matches: matches))

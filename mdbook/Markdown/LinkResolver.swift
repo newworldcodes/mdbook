@@ -76,6 +76,18 @@ nonisolated enum LinkResolver {
         return result
     }
 
+    /// A link destination from `document` to `target`: a relative path (with `../` where
+    /// needed) and spaces encoded, as a markdown link needs it.
+    static func relativePath(from document: URL, to target: URL) -> String {
+        let from = document.deletingLastPathComponent().standardizedFileURL.pathComponents
+        let to = target.standardizedFileURL.pathComponents
+        var common = 0
+        while common < min(from.count, to.count), from[common] == to[common] { common += 1 }
+        let ups = Array(repeating: "..", count: from.count - common)
+        let path = (ups + to[common...]).joined(separator: "/")
+        return path.replacingOccurrences(of: " ", with: "%20")
+    }
+
     // swiftlint:disable:next force_try
     private static let bareURL = try! NSRegularExpression(pattern: #"(?<![\w"(<\]/])https?://[^\s<>)]+"#)
 

@@ -112,38 +112,67 @@ struct ContentView: View {
                 .help("Open a folder as a project")
             }
         }
-        .alert("Something Went Wrong", isPresented: errorBinding) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(model.errorMessage ?? "")
-        }
-        .alert("New File", isPresented: newFileBinding) {
-            TextField("Name", text: $model.newFileName)
-            Button("Create") { model.createRequestedFile() }
-            Button("Cancel", role: .cancel) { model.newFileFolder = nil }
-        } message: {
-            Text("Enter a name for the new markdown file.")
-        }
-        .alert("Rename", isPresented: renameBinding) {
-            TextField("Name", text: $model.renameName)
-            Button("Rename") { model.renamePendingNode() }
-            Button("Cancel", role: .cancel) { model.nodePendingRename = nil }
-        } message: {
-            Text("Enter a new name for \u{201C}\(model.nodePendingRename?.name ?? "")\u{201D}.")
-        }
-        .confirmationDialog(
-            "Move \u{201C}\(model.nodePendingDeletion?.name ?? "")\u{201D} to the Trash?",
-            isPresented: deleteBinding,
-            titleVisibility: .visible
-        ) {
-            Button("Move to Trash", role: .destructive) { model.deletePendingNode() }
-            Button("Cancel", role: .cancel) { model.nodePendingDeletion = nil }
-        } message: {
-            Text("You can restore it from the Trash later.")
-        }
+        .modifier(ProjectAlerts(model: model))
         .task {
             model.restoreLastProject()
         }
+    }
+
+}
+
+/// The project's alerts and confirmations: external changes, errors, new file, rename, delete.
+struct ProjectAlerts: ViewModifier {
+    @Bindable var model: ProjectModel
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                "\u{201C}\(model.externalChange?.lastPathComponent ?? "")\u{201D} Changed on Disk",
+                isPresented: externalChangeBinding
+            ) {
+                Button("Keep My Version") { model.resolveExternalChange(keepMine: true) }
+                Button("Reload from Disk", role: .destructive) { model.resolveExternalChange(keepMine: false) }
+            } message: {
+                Text("Another app changed this file while you had unsaved edits. Keeping your version overwrites theirs; reloading discards your edits.")
+            }
+            .alert("Something Went Wrong", isPresented: errorBinding) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.errorMessage ?? "")
+            }
+            .alert("New File", isPresented: newFileBinding) {
+                TextField("Name", text: $model.newFileName)
+                Button("Create") { model.createRequestedFile() }
+                Button("Cancel", role: .cancel) { model.newFileFolder = nil }
+            } message: {
+                Text("Enter a name for the new markdown file.")
+            }
+            .alert("Rename", isPresented: renameBinding) {
+                TextField("Name", text: $model.renameName)
+                Button("Rename") { model.renamePendingNode() }
+                Button("Cancel", role: .cancel) { model.nodePendingRename = nil }
+            } message: {
+                Text("Enter a new name for \u{201C}\(model.nodePendingRename?.name ?? "")\u{201D}.")
+            }
+            .confirmationDialog(
+                "Move \u{201C}\(model.nodePendingDeletion?.name ?? "")\u{201D} to the Trash?",
+                isPresented: deleteBinding,
+                titleVisibility: .visible
+            ) {
+                Button("Move to Trash", role: .destructive) { model.deletePendingNode() }
+                Button("Cancel", role: .cancel) { model.nodePendingDeletion = nil }
+            } message: {
+                Text("You can restore it from the Trash later.")
+            }
+    }
+
+    private var externalChangeBinding: Binding<Bool> {
+        Binding(
+            get: { model.externalChange != nil },
+            // Dismissing without choosing keeps the edits but leaves saving paused until the
+            // next change on disk or file switch; treat it as "keep mine" instead.
+            set: { if !$0, model.externalChange != nil { model.resolveExternalChange(keepMine: true) } }
+        )
     }
 
     private var errorBinding: Binding<Bool> {
@@ -190,6 +219,7 @@ struct DocumentAreaView: View {
                         mode: .wysiwyg,
                         onOpenLink: model.open(linkDestination:),
                         documentURL: selection,
+                        projectFiles: model.treeFiles,
                         anchorRequest: model.pendingAnchor,
                         revealRequest: model.pendingReveal
                     )
@@ -200,6 +230,7 @@ struct DocumentAreaView: View {
                             mode: .source,
                             onOpenLink: model.open(linkDestination:),
                             documentURL: selection,
+                            projectFiles: model.treeFiles,
                             anchorRequest: model.pendingAnchor,
                             revealRequest: model.pendingReveal,
                             onScroll: { sourceScrollFraction = $0 }

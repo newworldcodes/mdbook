@@ -3,6 +3,7 @@
 //  mdbookTests
 //
 
+import AppKit
 import Foundation
 import Testing
 @testable import mdbook
@@ -348,6 +349,14 @@ struct LinkResolverTests {
         #expect(LinkResolver.resolve("my%20file.md", relativeTo: document) == .file(URL(fileURLWithPath: "/book/chapters/my file.md"), fragment: nil))
     }
 
+    @Test("Relative paths between documents")
+    func relativePaths() {
+        let doc = URL(fileURLWithPath: "/book/src/part one/a.md")
+        #expect(LinkResolver.relativePath(from: doc, to: URL(fileURLWithPath: "/book/src/part one/b.md")) == "b.md")
+        #expect(LinkResolver.relativePath(from: doc, to: URL(fileURLWithPath: "/book/src/c.md")) == "../c.md")
+        #expect(LinkResolver.relativePath(from: doc, to: URL(fileURLWithPath: "/book/src/part two/d e.md")) == "../part%20two/d%20e.md")
+    }
+
     @Test("External and anchor links")
     func externalAndAnchors() {
         #expect(LinkResolver.resolve("https://example.com/a", relativeTo: document) == .external(URL(string: "https://example.com/a")!))
@@ -541,6 +550,97 @@ struct ProjectSearchTests {
         ])
         #expect(results.map(\.url.lastPathComponent) == ["a.md"])
         #expect(ProjectSearch.search("  ", in: [(url: URL(fileURLWithPath: "/a"), text: "  ")]).isEmpty)
+    }
+}
+
+// MARK: - Editor behaviour
+
+@MainActor
+@Suite("List indentation")
+struct ListIndentationTests {
+    private func run(_ text: String, caretAfter needle: String, _ action: (MarkdownTextView) -> Void) -> (String, Int) {
+        let (_, textView) = MarkdownTextView.makeScrollable()
+        textView.string = text
+        let location = NSMaxRange((text as NSString).range(of: needle))
+        textView.setSelectedRange(NSRange(location: location, length: 0))
+        action(textView)
+        return (textView.string, textView.selectedRange().location)
+    }
+
+    @Test("Tab nests a bullet under the previous item and keeps the caret on its text")
+    func indentBullet() {
+        let (text, caret) = run("- one\n- two", caretAfter: "tw") { $0.insertTab(nil) }
+        #expect(text == "- one\n  - two")
+        #expect((text as NSString).substring(to: caret).hasSuffix("tw"))
+    }
+
+    @Test("Ordered items nest by the parent's marker width and renumber")
+    func indentOrdered() {
+        let (text, _) = run("9. nine\n10. ten\n11. eleven", caretAfter: "eleven") { $0.insertTab(nil) }
+        #expect(text == "9. nine\n10. ten\n    1. eleven")
+    }
+
+    @Test("Shift-Tab returns an item to its parent's level and continues its numbering")
+    func outdent() {
+        let (text, _) = run("1. a\n   1. b\n2. c", caretAfter: "b") { $0.insertBacktab(nil) }
+        #expect(text == "1. a\n2. b\n2. c")
+    }
+
+    @Test("Tab outside a list types a tab")
+    func plainTab() {
+        let (text, _) = run("plain", caretAfter: "plain") { $0.insertTab(nil) }
+        #expect(text == "plain\t")
+    }
+}
+
+@MainActor
+@Suite("Link completion")
+struct LinkCompletionTests {
+    @Test("Completion covers the destination typed after `](`, and only there")
+    func destinationRange() {
+        let (_, textView) = MarkdownTextView.makeScrollable()
+        var asked: [String] = []
+        textView.linkCompletions = { partial in
+            asked.append(partial)
+            return ["chapter.md", "#intro"]
+        }
+        textView.string = "See [the chapter](cha"
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+        let range = textView.rangeForUserCompletion
+        #expect((textView.string as NSString).substring(with: range) == "cha")
+        var index = 0
+        #expect(textView.completions(forPartialWordRange: range, indexOfSelectedItem: &index) == ["chapter.md", "#intro"])
+        #expect(asked == ["cha"])
+
+        // Past a closed link, ordinary word completion applies again.
+        textView.string = "[done](a.md) after"
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+        _ = textView.completions(forPartialWordRange: textView.rangeForUserCompletion, indexOfSelectedItem: &index)
+        #expect(asked == ["cha"])
+    }
+}
+
+@Suite("Text files")
+struct TextFileTests {
+    @Test("Legacy encodings are detected and kept when saving")
+    func encodings() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("latin-\(UUID().uuidString).md")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data([0x63, 0x61, 0x66, 0xE9]).write(to: url) // "café" in Windows-1252 / Latin-1
+        let file = try TextFile.read(url)
+        #expect(file.text == "café")
+        #expect(file.encoding == .windowsCP1252)
+        #expect(try TextFile.write("café!", to: url, encoding: file.encoding) == .windowsCP1252)
+        #expect(try TextFile.write("café 😀", to: url, encoding: file.encoding) == .utf8)
+        #expect(try TextFile.read(url).text == "café 😀")
+    }
+
+    @Test("A UTF-8 byte order mark is dropped")
+    func bom() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("bom-\(UUID().uuidString).md")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data([0xEF, 0xBB, 0xBF, 0x23, 0x20, 0x41]).write(to: url)
+        #expect(try TextFile.read(url).text == "# A")
     }
 }
 
