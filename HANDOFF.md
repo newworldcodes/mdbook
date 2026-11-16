@@ -31,7 +31,9 @@ which exercises every construct. Render them in Xcode's canvas, or screenshot th
 with `screencapture -l<windowID>` (find the id with `CGWindowListCopyWindowInfo`).
 
 The app target and scheme are "MD Book" (bundle id unchanged, Swift module `MD_Book`) and it
-deploys to macOS 15.6. The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not a
+deploys to macOS 15.6. It is on the Mac App Store (1.0 submitted 2026-11-16). `Info.plist`
+declares `ITSAppUsesNonExemptEncryption = NO` (no encryption beyond the system's HTTPS), so
+uploads skip the export-compliance question; revisit that if the app ever adds its own crypto. The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not a
 `project.pbxproj`. Do not hand-edit it. See "Adding swift-markdown" below for why.
 
 ## What exists
@@ -99,8 +101,7 @@ deploys to macOS 15.6. The project file is Xcode 27's JSON-style `mdbook.xcodepr
     image's width (`.markdownInlineImage`) and covered by the image in `drawGlyphs` (after
     the glyphs, because a linked image's character gets the link colour and underline). The coordinator loads local
     images synchronously (cached; misses retried after each edit) and remote ones in the
-    background, which needs the Outgoing Connections entitlement (not enabled yet; enable it
-    in Signing & Capabilities, never by editing `project.xcproj`).
+    background (the Outgoing Connections entitlement is enabled for this).
 - Dropping or pasting image files links them where they are if they're inside the
   document's folder, else copies them into `images/` beside the document; pasted image data
   is saved there as a PNG. Pasting a URL over selected text makes a link.
@@ -190,8 +191,8 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 ## Known gaps (priority order)
 
 1. Mermaid diagrams (shown as source) and real math typesetting: both need a JS library in a
-   WKWebView, i.e. a bundled third-party asset plus the Outgoing Connections entitlement
-   (WebKit's content process dies in the sandbox without it). Deferred for now.
+   WKWebView, i.e. a bundled third-party asset (WebKit's content process also needs the
+   Outgoing Connections entitlement, which is now enabled). Waiting on a feature request.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a
