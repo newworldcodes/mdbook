@@ -45,7 +45,7 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | Markdown scanning | `Markdown/MarkdownHighlighter.swift`, `MarkdownSourceMap.swift` | A swift-markdown `MarkupWalker` producing `MarkdownSpans` (UTF-16 `NSRange`s) for the styler. The source map converts cmark's UTF-8 byte columns. See "swift-markdown" below for the cmark position bugs it works around. |
 | Preview | `Views/MarkdownPreviewView.swift`, `Markdown/MarkdownBlockParser.swift` | swift-markdown tree → `MarkdownBlock` tree (inline `AttributedString`s with `inlinePresentationIntent` and `.link`) → SwiftUI. Tables via `Grid`, task lists, images (local or `AsyncImage`), anchors via `ScrollViewReader`, approximate scroll sync from the source pane. |
 | Links | `Markdown/LinkResolver.swift`, `HeadingSlug.swift` | Relative paths resolve against the document; folders fall back to README/index/SUMMARY; `#anchor` and `file.md#anchor` use GitHub-style slugs. |
-| Tables | `Markdown/MarkdownTableFormatter.swift` + styler/layout manager | Grid rendering when the caret is outside (pipes made clear and kerned so columns line up in the proportional font; delimiter row collapsed; header fill and grid drawn by the layout manager). Aligned monospaced source when the caret is inside; columns re-padded on leave. |
+| Tables | `Markdown/MarkdownTableFormatter.swift`, `TableColumnSizer.swift`, `Editor/MarkdownTableRendering.swift` + styler/layout manager | Caret outside: the table is drawn by the layout manager with wrapping cells, fitted to the editor width (see below). Caret inside: aligned monospaced source; columns re-padded on leave. The preview's `TableGridLayout` uses the same `TableColumnSizer`, so both wrap cells instead of overflowing. |
 | Code highlighting | `Markdown/CodeHighlighter.swift` | Hand-written tokenizer, ~20 languages plus a generic fallback. Used by both editor and preview. Colours in `EditorTheme.color(for:)`. |
 | Tests | `mdbookTests/mdbookTests.swift` | 49 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
 
@@ -62,8 +62,16 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
   and new paragraph's markers, except around tables, which restyle fully.
 - The "active region" is the caret's paragraph, widened to the whole table when inside one.
 - `MarkdownLayoutManager.drawBackground` paints code block panels (`.markdownCodeBlock`),
-  editing-mode table header panels (`.markdownTableHeader`) and rendered table grids
-  (`.markdownTableGrid` + `.markdownTableColumns` edges + `.markdownTablePipe`).
+  editing-mode table header panels (`.markdownTableHeader`) and rendered tables.
+- Rendered tables: the styler builds a `MarkdownTableRendering` (cells = the styled source
+  runs minus markers; widths from `TableColumnSizer` for the container width) and stores it
+  on the table's characters, then hides every source glyph. The coordinator's
+  `shouldSetLineFragmentRect` delegate grows the fragment holding the table's first
+  character by the table height and collapses the rest; the layout manager draws the table
+  there. Hidden glyphs join the *previous* line's fragment, so always look the table up
+  across a fragment's character range (`MarkdownLayoutManager.tableRendering(in:)`), never
+  at its first character. A click inside the drawn table puts the caret in that cell's
+  source; a width change restyles (coalesced) so tables refit.
 - Typing attributes are scrubbed on every selection change so links, hidden flags and
   strikethrough never leak into new text.
 - `isRichText = false`, smart quotes/dashes off, spell check off by default.
@@ -149,7 +157,8 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 8. Footnotes, math, Mermaid, emoji shortcodes.
 9. Tests for the coordinator, autosave, rename and history.
 
-Known quirks: tables wider than the editor wrap and break the grid; an image nested inside a
+Known quirks: links inside a rendered editor table aren't clickable (a click enters the
+table); find/selection highlights don't show inside a rendered table; an image nested inside a
 link renders as the image in the preview but isn't clickable; raw HTML blocks show as source
 in the preview; auto-align rewrites table text when the caret leaves (undoable).
 

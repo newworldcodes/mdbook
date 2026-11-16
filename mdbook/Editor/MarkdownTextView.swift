@@ -69,10 +69,36 @@ final class MarkdownTextView: NSTextView {
     // MARK: - Task checkboxes
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 1, toggleTaskCheckbox(at: event) {
+        if event.clickCount == 1, toggleTaskCheckbox(at: event) || enterRenderedTable(at: event) {
             return
         }
         super.mouseDown(with: event)
+    }
+
+    /// Called when the view's width changes (rendered tables are fitted to it).
+    var onWidthChange: (() -> Void)?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let oldWidth = frame.width
+        super.setFrameSize(newSize)
+        if newSize.width != oldWidth { onWidthChange?() }
+    }
+
+    /// A click on a rendered table puts the caret in the clicked cell's source, which
+    /// switches the table to editable source.
+    private func enterRenderedTable(at event: NSEvent) -> Bool {
+        guard let layoutManager = layoutManager as? MarkdownLayoutManager, let textContainer else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        var fragmentGlyphs = NSRange()
+        _ = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndex(for: containerPoint, in: textContainer), effectiveRange: &fragmentGlyphs)
+        let characters = layoutManager.characterRange(forGlyphRange: fragmentGlyphs, actualGlyphRange: nil)
+        guard let rendering = layoutManager.tableRendering(in: characters),
+              let frame = layoutManager.tableFrame(for: rendering, origin: textContainerOrigin),
+              frame.contains(point) else { return false }
+        let location = rendering.sourceLocation(at: NSPoint(x: point.x - frame.minX, y: point.y - frame.minY)) ?? rendering.location
+        setSelectedRange(NSRange(location: location, length: 0))
+        return true
     }
 
     private func toggleTaskCheckbox(at event: NSEvent) -> Bool {

@@ -3,7 +3,7 @@
 //  mdbook
 //
 //  Draws the decorations that attributes alone can't express: full-width panels
-//  behind fenced code blocks, and grid lines plus a header fill for tables.
+//  behind fenced code blocks, header fills for tables being edited, and rendered tables.
 //
 
 import AppKit
@@ -33,7 +33,36 @@ final class MarkdownLayoutManager: NSLayoutManager {
             return (origin.x + padding - panelHorizontalPadding / 2, usedWidth + panelHorizontalPadding)
         }
 
-        drawTableGrids(in: characterRange, storage: textStorage, origin: origin)
+        forEachRun(of: .markdownTableRendering, in: characterRange, storage: textStorage) { range in
+            guard let rendering = textStorage.attribute(.markdownTableRendering, at: range.location, effectiveRange: nil) as? MarkdownTableRendering,
+                  let frame = tableFrame(for: rendering, origin: origin) else { return }
+            rendering.draw(in: frame, headerFill: tableHeaderBackground, gridColor: gridColor)
+        }
+    }
+
+    /// The rendered table whose (hidden) source falls in `characters`, if any. A table's
+    /// glyphs join the line fragment of the line before it, so look across the whole range.
+    func tableRendering(in characters: NSRange) -> MarkdownTableRendering? {
+        guard let textStorage, NSMaxRange(characters) <= textStorage.length else { return nil }
+        var found: MarkdownTableRendering?
+        textStorage.enumerateAttribute(.markdownTableRendering, in: characters, options: []) { value, _, stop in
+            if let rendering = value as? MarkdownTableRendering {
+                found = rendering
+                stop.pointee = true
+            }
+        }
+        return found
+    }
+
+    /// Where a rendered table is drawn, in the coordinates `origin` is given in. The table
+    /// sits in the tall line fragment the coordinator reserved for its first line.
+    func tableFrame(for rendering: MarkdownTableRendering, origin: NSPoint) -> NSRect? {
+        guard let textStorage, rendering.location < textStorage.length else { return nil }
+        let glyph = glyphIndexForCharacter(at: rendering.location)
+        let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let padding = textContainers.first?.lineFragmentPadding ?? 0
+        let size = rendering.tableSize
+        return NSRect(x: origin.x + fragment.minX + padding, y: origin.y + fragment.minY + rendering.offsetInFragment + MarkdownTableRendering.margin, width: size.width, height: size.height)
     }
 
     // MARK: - Panels
@@ -68,54 +97,6 @@ final class MarkdownLayoutManager: NSLayoutManager {
         }
     }
 
-    // MARK: - Table grids
-
-    private func drawTableGrids(in characterRange: NSRange, storage: NSTextStorage, origin: NSPoint) {
-        forEachRun(of: .markdownTableGrid, in: characterRange, storage: storage) { tableRange in
-            // Column boundaries (relative to the row start) were computed by the styler.
-            guard let edgeNumbers = storage.attribute(.markdownTableColumns, at: tableRange.location, effectiveRange: nil) as? [NSNumber],
-                  let lastEdge = edgeNumbers.last else { return }
-            let columnEdges = edgeNumbers.map { CGFloat($0.doubleValue) }
-
-            let glyphRange = self.glyphRange(forCharacterRange: tableRange, actualCharacterRange: nil)
-            var fragments: [NSRect] = []
-            enumerateLineFragments(forGlyphRange: glyphRange) { rect, _, _, _, _ in
-                fragments.append(rect)
-            }
-            guard let first = fragments.first, let last = fragments.last else { return }
-
-            let leftEdge = first.minX + location(forGlyphAt: glyphRange.location).x
-            let rightEdge = leftEdge + CGFloat(lastEdge.doubleValue)
-            let frame = NSRect(x: origin.x + leftEdge, y: origin.y + first.minY, width: rightEdge - leftEdge, height: last.maxY - first.minY)
-
-            // Header fill.
-            tableHeaderBackground.setFill()
-            let headerRect = NSRect(x: frame.minX, y: origin.y + first.minY, width: frame.width, height: first.height)
-            NSBezierPath(rect: headerRect).fill()
-
-            // Row separators (the collapsed delimiter row is a sliver; skip its own bottom edge).
-            let path = NSBezierPath()
-            path.lineWidth = 1
-            for fragment in fragments.dropLast() where fragment.height >= 8 {
-                let y = (origin.y + fragment.maxY).rounded() + 0.5
-                path.move(to: NSPoint(x: frame.minX, y: y))
-                path.line(to: NSPoint(x: frame.maxX, y: y))
-            }
-            // Column separators (all but the last edge, which is the outer border).
-            for edge in columnEdges.dropLast() {
-                let x = (frame.minX + edge).rounded() + 0.5
-                path.move(to: NSPoint(x: x, y: frame.minY))
-                path.line(to: NSPoint(x: x, y: frame.maxY))
-            }
-            gridColor.setStroke()
-            path.stroke()
-
-            let border = NSBezierPath(roundedRect: frame.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
-            border.lineWidth = 1
-            border.stroke()
-        }
-    }
-
     // MARK: - Helpers
 
     /// Calls `body` once per maximal run of `attribute` that touches `characterRange`.
@@ -137,10 +118,4 @@ extension NSAttributedString.Key {
     static let markdownCodeBlock = NSAttributedString.Key("mdbook.codeBlock")
     /// Present on the header row of a table that is being edited as source.
     static let markdownTableHeader = NSAttributedString.Key("mdbook.tableHeader")
-    /// Present on every character of a table drawn as a grid.
-    static let markdownTableGrid = NSAttributedString.Key("mdbook.tableGrid")
-    /// Present on each cell-separating pipe of a table drawn as a grid.
-    static let markdownTablePipe = NSAttributedString.Key("mdbook.tablePipe")
-    /// `[NSNumber]` of cumulative column boundaries (points from the row start) for a grid table.
-    static let markdownTableColumns = NSAttributedString.Key("mdbook.tableColumns")
 }

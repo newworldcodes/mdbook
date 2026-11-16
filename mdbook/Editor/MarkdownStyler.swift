@@ -10,15 +10,10 @@ import AppKit
 struct MarkdownStyler {
     let theme: EditorTheme
 
-    /// Horizontal space added to every table column (split between the two sides of a cell).
-    static let tableCellPadding: CGFloat = 28
-    /// Vertical space above and below the text in each rendered table row.
-    static let tableRowPadding: CGFloat = 6
-
     /// Restyles the whole document. `activeRegion` is the paragraph containing the caret
     /// (widened to the whole table when the caret is inside one); markup there stays
-    /// visible so the user can edit it.
-    func applyAll(to storage: NSTextStorage, spans: MarkdownSpans, activeRegion: NSRange?) {
+    /// visible so the user can edit it. Tables drawn as grids are fitted to `tableWidth`.
+    func applyAll(to storage: NSTextStorage, spans: MarkdownSpans, activeRegion: NSRange?, tableWidth: CGFloat = .greatestFiniteMagnitude) {
         let full = NSRange(location: 0, length: storage.length)
         guard full.length > 0 else { return }
 
@@ -90,12 +85,12 @@ struct MarkdownStyler {
             for line in table.lines {
                 storage.addAttribute(.font, value: font, range: line)
                 if theme.mode == .wysiwyg {
+                    // Rendered tables reserve their own height in the layout (see
+                    // `MarkdownTableRendering`), so their lines get no extra spacing.
                     let style = mutableParagraphStyle()
-                    style.lineSpacing = 2
-                    // Rendered rows get vertical padding; the collapsed delimiter row gets none.
-                    let padded = asGrid && line != table.delimiterLine
-                    style.paragraphSpacingBefore = padded ? Self.tableRowPadding : 0
-                    style.paragraphSpacing = padded ? Self.tableRowPadding : 0
+                    style.lineSpacing = asGrid ? 0 : 2
+                    style.paragraphSpacingBefore = 0
+                    style.paragraphSpacing = 0
                     storage.addAttribute(.paragraphStyle, value: style, range: line)
                 }
             }
@@ -127,9 +122,8 @@ struct MarkdownStyler {
             storage.addAttribute(.foregroundColor, value: theme.markerColor, range: range)
         }
 
-        // Tables after inline styling so cell measurements use their final fonts.
         for table in spans.tables {
-            styleTable(table, storage: storage, asGrid: rendersAsGrid(table, activeRegion: activeRegion), hiddenMarkers: spans.markers)
+            styleTable(table, storage: storage, asGrid: rendersAsGrid(table, activeRegion: activeRegion))
         }
 
         // Markers last so they pick up the font of their surroundings.
@@ -142,6 +136,11 @@ struct MarkdownStyler {
             } else {
                 storage.addAttribute(.foregroundColor, value: theme.markerColor, range: marker)
             }
+        }
+
+        // Last, so cells are built from fully styled text with markers known.
+        for table in spans.tables where rendersAsGrid(table, activeRegion: activeRegion) {
+            renderTable(table, storage: storage, width: tableWidth)
         }
 
         storage.endEditing()
@@ -191,114 +190,102 @@ struct MarkdownStyler {
 
     // MARK: - Tables
 
-    private struct TableCell {
-        var range: NSRange
-        var closingPipe: NSRange?
-    }
-
-    private func styleTable(_ table: MarkdownSpans.Table, storage: NSTextStorage, asGrid: Bool, hiddenMarkers: [NSRange]) {
+    private func styleTable(_ table: MarkdownSpans.Table, storage: NSTextStorage, asGrid: Bool) {
         guard NSMaxRange(table.range) <= storage.length else { return }
         addTrait(.bold, in: table.headerLine, storage: storage)
-
-        guard asGrid else {
-            storage.addAttribute(.markdownTableHeader, value: true, range: table.headerLine)
-            storage.addAttribute(.foregroundColor, value: theme.markerColor, range: table.delimiterLine)
-            for pipe in table.pipes {
-                storage.addAttribute(.foregroundColor, value: theme.markerColor, range: pipe)
-            }
-            return
-        }
-
-        // Rendered grid: pipes become invisible spacers whose advance is set by kerning so
-        // every column occupies the same slot on every row, and the delimiter row collapses
-        // to a sliver. The layout manager draws the grid at the slot boundaries.
-        storage.addAttribute(.markdownTableGrid, value: true, range: table.range)
+        guard !asGrid else { return }
+        storage.addAttribute(.markdownTableHeader, value: true, range: table.headerLine)
+        storage.addAttribute(.foregroundColor, value: theme.markerColor, range: table.delimiterLine)
         for pipe in table.pipes {
-            storage.addAttributes([.foregroundColor: NSColor.clear, .markdownTablePipe: true], range: pipe)
+            storage.addAttribute(.foregroundColor, value: theme.markerColor, range: pipe)
         }
-        var delimiter = table.delimiterLine
-        if NSMaxRange(delimiter) < storage.length { delimiter.length += 1 } // include its newline
-        storage.addAttributes([.font: NSFont.systemFont(ofSize: 2), .foregroundColor: NSColor.clear], range: delimiter)
+    }
 
+    /// Replaces a table's source with a drawn grid: builds the cells from the styled text,
+    /// stores the rendering on the table and hides every source glyph. Line terminators stay
+    /// visible to the layout so each row is still its own line fragment.
+    private func renderTable(_ table: MarkdownSpans.Table, storage: NSTextStorage, width: CGFloat) {
+        guard NSMaxRange(table.range) <= storage.length else { return }
         let ns = storage.string as NSString
         let alignments = MarkdownTableFormatter.cells(in: ns.substring(with: table.delimiterLine))
             .map(MarkdownTableFormatter.alignment(ofDelimiterCell:))
         let rows = table.lines
             .filter { $0 != table.delimiterLine }
-            .map { cells(inLine: $0, pipes: table.pipes, ns: ns) }
-
-        // Visible width of each cell (hidden syntax such as `**` takes no space on screen).
-        func visibleWidth(_ range: NSRange) -> CGFloat {
-            var total = width(of: range, in: storage)
-            for marker in hiddenMarkers {
-                let overlap = NSIntersectionRange(marker, range)
-                if overlap.length > 0 { total -= width(of: overlap, in: storage) }
-            }
-            return max(0, total)
-        }
-
-        var slots: [CGFloat] = []
-        for row in rows {
-            for (column, cell) in row.enumerated() {
-                let cellWidth = visibleWidth(cell.range) + Self.tableCellPadding
-                if column >= slots.count { slots.append(cellWidth) } else { slots[column] = max(slots[column], cellWidth) }
-            }
-        }
-
-        // Each pipe's advance becomes: space after the cell on its left + space before the
-        // cell on its right. A pipe at the start or end of a row only has one side.
-        var targetAdvance: [Int: CGFloat] = [:]
-        for row in rows {
-            for (column, cell) in row.enumerated() {
-                let slack = slots[column] - visibleWidth(cell.range)
-                let alignment = column < alignments.count ? alignments[column] : .none
-                let before: CGFloat
-                switch alignment {
-                case .right: before = slack - Self.tableCellPadding / 2
-                case .center: before = slack / 2
-                case .left, .none: before = Self.tableCellPadding / 2
-                }
-                let after = slack - before
-                if cell.range.location > 0, storage.attribute(.markdownTablePipe, at: cell.range.location - 1, effectiveRange: nil) != nil {
-                    targetAdvance[cell.range.location - 1, default: 0] += before
-                }
-                if let pipe = cell.closingPipe {
-                    targetAdvance[pipe.location, default: 0] += after
+            .map { line in
+                cells(inLine: line, pipes: table.pipes, ns: ns).enumerated().map { column, cell in
+                    let alignment = column < alignments.count ? alignments[column] : .none
+                    return cellContent(cell, alignment: alignment, storage: storage)
                 }
             }
+        let font = theme.baseFont
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        let rendering = MarkdownTableRendering(range: table.range, rows: rows, availableWidth: width, minimumLineHeight: lineHeight)
+
+        storage.addAttribute(.markdownTableRendering, value: rendering, range: table.range)
+        for line in table.lines {
+            storage.addAttribute(.markdownHidden, value: true, range: line)
         }
-        for (location, advance) in targetAdvance where location < storage.length {
-            let glyphWidth = width(of: NSRange(location: location, length: 1), in: storage)
-            storage.addAttribute(.kern, value: advance - glyphWidth, range: NSRange(location: location, length: 1))
+    }
+
+    /// A cell's visible text: its styled characters without markdown markers or the
+    /// whitespace around them, aligned as its column says.
+    private func cellContent(_ range: NSRange, alignment: MarkdownTableFormatter.Alignment, storage: NSTextStorage) -> MarkdownTableRendering.Cell {
+        let text = NSMutableAttributedString()
+        storage.enumerateAttribute(.markdownMarker, in: range, options: []) { marker, subrange, _ in
+            guard marker == nil else { return }
+            text.append(storage.attributedSubstring(from: subrange))
+        }
+        // `\|` is an escaped pipe; show the pipe.
+        var escape = text.mutableString.range(of: "\\|")
+        while escape.location != NSNotFound {
+            text.deleteCharacters(in: NSRange(location: escape.location, length: 1))
+            escape = text.mutableString.range(of: "\\|")
+        }
+        let whitespace = CharacterSet.whitespaces
+        while text.length > 0, let scalar = UnicodeScalar(text.mutableString.character(at: 0)), whitespace.contains(scalar) {
+            text.deleteCharacters(in: NSRange(location: 0, length: 1))
+        }
+        while text.length > 0, let scalar = UnicodeScalar(text.mutableString.character(at: text.length - 1)), whitespace.contains(scalar) {
+            text.deleteCharacters(in: NSRange(location: text.length - 1, length: 1))
         }
 
-        // Cumulative column boundaries, relative to the start of each row.
-        var edges: [CGFloat] = []
-        var runningEdge: CGFloat = 0
-        for slot in slots {
-            runningEdge += slot
-            edges.append(runningEdge)
+        let full = NSRange(location: 0, length: text.length)
+        for key: NSAttributedString.Key in [.markdownHidden, .markdownMarker, .markdownTableHeader, .kern, .cursor, .markdownTask] {
+            text.removeAttribute(key, range: full)
         }
-        storage.addAttribute(.markdownTableColumns, value: edges.map { NSNumber(value: Double($0)) }, range: table.range)
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byWordWrapping
+        switch alignment {
+        case .center: style.alignment = .center
+        case .right: style.alignment = .right
+        case .left, .none: style.alignment = .left
+        }
+        text.addAttribute(.paragraphStyle, value: style, range: full)
+
+        // Place the caret at the start of the content rather than in the padding.
+        let ns = storage.string as NSString
+        var start = range.location
+        while start < NSMaxRange(range), ns.character(at: start) == 0x20 || ns.character(at: start) == 0x09 { start += 1 }
+        return MarkdownTableRendering.Cell(text: text, source: NSRange(location: start, length: 0))
     }
 
     /// Splits a table line into cells by its pipes, skipping the blank segments outside
     /// a leading or trailing pipe.
-    private func cells(inLine line: NSRange, pipes: [NSRange], ns: NSString) -> [TableCell] {
+    private func cells(inLine line: NSRange, pipes: [NSRange], ns: NSString) -> [NSRange] {
         let linePipes = pipes.filter { NSLocationInRange($0.location, line) }
-        var cells: [TableCell] = []
+        var cells: [NSRange] = []
         var start = line.location
         for pipe in linePipes {
             let range = NSRange(location: start, length: pipe.location - start)
             let isBlankLeading = cells.isEmpty && ns.substring(with: range).trimmingCharacters(in: .whitespaces).isEmpty
             if !isBlankLeading {
-                cells.append(TableCell(range: range, closingPipe: pipe))
+                cells.append(range)
             }
             start = NSMaxRange(pipe)
         }
         let tail = NSRange(location: start, length: NSMaxRange(line) - start)
         if tail.length > 0, !ns.substring(with: tail).trimmingCharacters(in: .whitespaces).isEmpty {
-            cells.append(TableCell(range: tail, closingPipe: nil))
+            cells.append(tail)
         }
         return cells
     }

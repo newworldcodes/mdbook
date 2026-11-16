@@ -83,6 +83,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var activeParagraph: NSRange?
         private var spans = MarkdownSpans()
         private var scrollObserver: NSObjectProtocol?
+        private var restyleForWidthPending = false
 
         init(parent: MarkdownEditorView) {
             self.parent = parent
@@ -97,6 +98,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         func configure(_ textView: MarkdownTextView) {
             textView.onFormatTable = { [weak self] in self?.formatTableAtCaret() }
+            textView.onWidthChange = { [weak self] in self?.widthDidChange() }
             textView.textContainerInset = theme.textContainerInset
             textView.font = theme.baseFont
             textView.textColor = theme.textColor
@@ -203,9 +205,27 @@ struct MarkdownEditorView: NSViewRepresentable {
             spans = MarkdownHighlighter.scan(storage.string)
             let caretParagraph = paragraphRange(for: textView)
             activeParagraph = caretParagraph
-            MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeRegion: activeRegion(for: caretParagraph))
+            MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeRegion: activeRegion(for: caretParagraph), tableWidth: tableWidth(of: textView))
             invalidateGlyphs(in: NSRange(location: 0, length: storage.length), textView: textView)
             textView.typingAttributes = theme.baseAttributes
+        }
+
+        /// The width a rendered table may use: the text container minus its line padding.
+        private func tableWidth(of textView: NSTextView) -> CGFloat {
+            guard let container = textView.textContainer else { return .greatestFiniteMagnitude }
+            return max(0, container.size.width - container.lineFragmentPadding * 2)
+        }
+
+        /// Rendered tables are fitted to the width, so refit them when it changes. Live
+        /// resizing sends many changes; restyle once per run-loop turn.
+        private func widthDidChange() {
+            guard theme.mode == .wysiwyg, !spans.tables.isEmpty, !restyleForWidthPending else { return }
+            restyleForWidthPending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.restyleForWidthPending = false
+                self.restyleEverything()
+            }
         }
 
         /// The paragraph itself, or the whole table when the paragraph is a table row:
@@ -293,6 +313,38 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         // MARK: NSLayoutManagerDelegate
+
+        /// The line fragment holding a rendered table's first character grows by the drawn
+        /// table's height and the table's other fragments collapse, so the grid the layout
+        /// manager draws has room and nothing else does. Hidden glyphs join the fragment of
+        /// the line before, so the table is found anywhere in the fragment, not at its start.
+        func layoutManager(
+            _ layoutManager: NSLayoutManager,
+            shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+            lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+            baselineOffset: UnsafeMutablePointer<CGFloat>,
+            in textContainer: NSTextContainer,
+            forGlyphRange glyphRange: NSRange
+        ) -> Bool {
+            let characters = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            guard let rendering = (layoutManager as? MarkdownLayoutManager)?.tableRendering(in: characters) else { return false }
+
+            if NSLocationInRange(rendering.location, characters) {
+                // Keep the height of whatever precedes the table in this fragment.
+                let leading = characters.location < rendering.location ? lineFragmentUsedRect.pointee.height : 0
+                rendering.offsetInFragment = leading
+                lineFragmentRect.pointee.size.height = leading + rendering.reservedHeight
+                lineFragmentUsedRect.pointee.size.height = leading + rendering.reservedHeight
+                return true
+            }
+            // Only collapse fragments made entirely of the table's hidden source.
+            guard characters.location > rendering.location,
+                  NSMaxRange(characters) <= NSMaxRange(rendering.range) + 1 else { return false }
+            lineFragmentRect.pointee.size.height = 0
+            lineFragmentUsedRect.pointee.size.height = 0
+            baselineOffset.pointee = 0
+            return true
+        }
 
         /// Replaces glyphs for hidden markers with null glyphs so they take no space.
         func layoutManager(

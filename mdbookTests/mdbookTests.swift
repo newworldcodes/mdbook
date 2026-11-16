@@ -413,6 +413,45 @@ struct TableSpanTests {
     }
 }
 
+// MARK: - Table column sizing
+
+@Suite("Table column sizer")
+struct TableColumnSizerTests {
+    @Test("Tables that fit keep their natural widths")
+    func fits() {
+        #expect(TableColumnSizer.widths(natural: [50, 100], minimum: [50, 40], available: 400) == [50, 100])
+    }
+
+    @Test("Narrow columns stay whole; wide ones share the rest by natural width")
+    func shares() {
+        let widths = TableColumnSizer.widths(natural: [60, 900, 400], minimum: [60, 80, 80], available: 660)
+        #expect(widths[0] == 60)
+        #expect(abs(widths.reduce(0, +) - 660) < 0.001)
+        #expect(abs(widths[1] / widths[2] - 2.25) < 0.001)
+    }
+
+    @Test("A column never goes below its longest word while others can give way")
+    func minimums() {
+        let widths = TableColumnSizer.widths(natural: [400, 1000], minimum: [300, 60], available: 500)
+        #expect(widths[0] == 300)
+        #expect(widths[1] == 200)
+    }
+
+    @Test("Unbreakable runs split at whitespace and after hyphens and slashes")
+    func unbreakableRuns() {
+        let text = "grammar-script-notes.md (var/const) plain"
+        let runs = TableColumnSizer.unbreakableRuns(in: text).map { (text as NSString).substring(with: $0) }
+        #expect(runs == ["grammar-", "script-", "notes.md", "(var/", "const)", "plain"])
+    }
+
+    @Test("If even the minimums overflow, they scale down to fit but not below the floor")
+    func overflow() {
+        let widths = TableColumnSizer.widths(natural: [300, 300], minimum: [200, 200], available: 200)
+        #expect(widths == [100, 100])
+        #expect(TableColumnSizer.widths(natural: [300, 300], minimum: [200, 200], available: 20) == [40, 40])
+    }
+}
+
 // MARK: - Code highlighting
 
 @Suite("Code highlighter")

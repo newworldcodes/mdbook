@@ -266,38 +266,116 @@ struct MarkdownListView: View {
 struct MarkdownTableView: View {
     let table: MarkdownTable
 
+    private static let fontSize: CGFloat = 15
+    private static let horizontalPadding: CGFloat = 10
+
     var body: some View {
-        ScrollView(.horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                GridRow {
-                    ForEach(Array(table.header.enumerated()), id: \.offset) { index, cell in
-                        cellView(cell, column: index)
-                            .fontWeight(.semibold)
-                    }
-                }
-                .background(Color(nsColor: .quaternarySystemFill))
-                ForEach(Array(table.rows.enumerated()), id: \.offset) { _, row in
-                    Divider().gridCellUnsizedAxes(.horizontal)
-                    GridRow {
-                        ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
-                            cellView(cell, column: index)
+        let columns = max(table.header.count, 1)
+        let rows = [table.header] + table.rows
+        TableGridLayout(columns: columns, horizontalPadding: Self.horizontalPadding) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                ForEach(0..<columns, id: \.self) { column in
+                    cellView(column < row.count ? row[column] : AttributedString(), column: column, isHeader: rowIndex == 0)
+                        .overlay(alignment: .bottom) {
+                            if rowIndex < rows.count - 1 { separator.frame(height: 1) }
                         }
-                    }
+                        .overlay(alignment: .trailing) {
+                            if column < columns - 1 { separator.frame(width: 1) }
+                        }
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
         }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
     }
 
-    private func cellView(_ cell: AttributedString, column: Int) -> some View {
+    private var separator: some View {
+        Rectangle().fill(Color(nsColor: .separatorColor))
+    }
+
+    private func cellView(_ cell: AttributedString, column: Int, isHeader: Bool) -> some View {
         let alignment = column < table.alignments.count ? table.alignments[column] : .left
-        return Text(MarkdownInlineStyle.styled(cell, baseSize: 15))
-            .font(.system(size: 15))
-            .padding(.horizontal, 10)
+        return Text(MarkdownInlineStyle.styled(cell, baseSize: Self.fontSize))
+            .font(.system(size: Self.fontSize))
+            .fontWeight(isHeader ? .semibold : nil)
+            .multilineTextAlignment(alignment.textAlignment)
+            .padding(.horizontal, Self.horizontalPadding)
             .padding(.vertical, 6)
-            .frame(maxWidth: .infinity, alignment: alignment.frameAlignment)
-            .gridColumnAlignment(alignment.horizontalAlignment)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment.topFrameAlignment)
+            .background(isHeader ? Color(nsColor: .quaternarySystemFill) : .clear)
+            .layoutValue(key: TableCellMinimumWidth.self, value: MarkdownInlineStyle.longestWordWidth(cell, baseSize: Self.fontSize, bold: isHeader))
+    }
+}
+
+/// The width of a cell's longest word, so columns never break words when they can avoid it.
+private struct TableCellMinimumWidth: LayoutValueKey {
+    static let defaultValue: CGFloat = 0
+}
+
+/// Lays out table cells (row-major) in columns sized by `TableColumnSizer`, so a table
+/// wraps its cells to fit the available width instead of overflowing it.
+struct TableGridLayout: Layout {
+    let columns: Int
+    let horizontalPadding: CGFloat
+
+    struct Cache {
+        var natural: [CGFloat]
+        var minimum: [CGFloat]
+    }
+
+    func makeCache(subviews: Subviews) -> Cache {
+        var natural = Array(repeating: CGFloat(0), count: columns)
+        var minimum = Array(repeating: CGFloat(0), count: columns)
+        for (index, subview) in subviews.enumerated() {
+            let column = index % columns
+            natural[column] = max(natural[column], subview.sizeThatFits(.unspecified).width.rounded(.up))
+            minimum[column] = max(minimum[column], subview[TableCellMinimumWidth.self] + horizontalPadding * 2)
+        }
+        return Cache(natural: natural, minimum: minimum)
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache = makeCache(subviews: subviews)
+    }
+
+    private func columnWidths(for proposedWidth: CGFloat?, cache: Cache) -> [CGFloat] {
+        let available = proposedWidth.flatMap { $0.isFinite ? $0 : nil } ?? cache.natural.reduce(0, +)
+        return TableColumnSizer.widths(natural: cache.natural, minimum: cache.minimum, available: available)
+    }
+
+    private func rowHeights(widths: [CGFloat], subviews: Subviews) -> [CGFloat] {
+        var heights: [CGFloat] = []
+        for (index, subview) in subviews.enumerated() {
+            let row = index / columns
+            let height = subview.sizeThatFits(ProposedViewSize(width: widths[index % columns], height: nil)).height
+            if row >= heights.count { heights.append(height) } else { heights[row] = max(heights[row], height) }
+        }
+        return heights
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        let widths = columnWidths(for: proposal.width, cache: cache)
+        let heights = rowHeights(widths: widths, subviews: subviews)
+        return CGSize(width: widths.reduce(0, +), height: heights.reduce(0, +))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let widths = columnWidths(for: bounds.width, cache: cache)
+        let heights = rowHeights(widths: widths, subviews: subviews)
+        var y = bounds.minY
+        for row in heights.indices {
+            var x = bounds.minX
+            for column in 0..<columns {
+                let index = row * columns + column
+                guard index < subviews.count else { break }
+                subviews[index].place(
+                    at: CGPoint(x: x, y: y),
+                    proposal: ProposedViewSize(width: widths[column], height: heights[row])
+                )
+                x += widths[column]
+            }
+            y += heights[row]
+        }
     }
 }
 
@@ -370,18 +448,37 @@ enum MarkdownInlineStyle {
         }
         return result
     }
+
+    /// The rendered width of the widest piece that can't wrap (see
+    /// `TableColumnSizer.unbreakableRuns`), approximating the fonts the cell views use.
+    static func longestWordWidth(_ source: AttributedString, baseSize: CGFloat, bold: Bool) -> CGFloat {
+        let measured = NSMutableAttributedString()
+        for run in source.runs {
+            let intent = run.inlinePresentationIntent ?? []
+            let weight: NSFont.Weight = bold || intent.contains(.stronglyEmphasized) ? .semibold : .regular
+            let font = intent.contains(.code)
+                ? NSFont.monospacedSystemFont(ofSize: baseSize * 0.88, weight: weight)
+                : NSFont.systemFont(ofSize: baseSize, weight: weight)
+            measured.append(NSAttributedString(string: String(source[run.range].characters), attributes: [.font: font]))
+        }
+        var widest: CGFloat = 0
+        for run in TableColumnSizer.unbreakableRuns(in: measured.string) {
+            widest = max(widest, measured.attributedSubstring(from: run).size().width)
+        }
+        return widest.rounded(.up) + 1
+    }
 }
 
 private extension MarkdownTextAlignment {
-    var frameAlignment: Alignment {
+    var topFrameAlignment: Alignment {
         switch self {
-        case .left: return .leading
-        case .center: return .center
-        case .right: return .trailing
+        case .left: return .topLeading
+        case .center: return .top
+        case .right: return .topTrailing
         }
     }
 
-    var horizontalAlignment: HorizontalAlignment {
+    var textAlignment: TextAlignment {
         switch self {
         case .left: return .leading
         case .center: return .center
