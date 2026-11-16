@@ -9,7 +9,7 @@
 import AppKit
 import SwiftUI
 import Testing
-@testable import mdbook
+@testable import MD_Book
 
 /// A temporary book. Opening a project writes to user defaults, which the test host shares
 /// with the real app, so those keys are saved here and restored by `close()`.

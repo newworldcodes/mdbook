@@ -13,15 +13,15 @@ and relative links). It is the best folder to open when checking changes by eye.
 
 ```sh
 # Build
-xcodebuild -project mdbook.xcodeproj -scheme mdbook -destination 'platform=macOS' -quiet build
+xcodebuild -project mdbook.xcodeproj -scheme 'MD Book' -destination 'platform=macOS' -quiet build
 
 # Unit + UI tests (Swift Testing; ~1 minute)
-xcodebuild -project mdbook.xcodeproj -scheme mdbook -destination 'platform=macOS' test 2>&1 \
+xcodebuild -project mdbook.xcodeproj -scheme 'MD Book' -destination 'platform=macOS' test 2>&1 \
   | grep -E 'Test Suite .* (passed|failed)|TEST (SUCCEEDED|FAILED)'
 
 # Launch the built app on a folder (sandbox grants access because Launch Services opens it)
-APP=$(xcodebuild -project mdbook.xcodeproj -scheme mdbook -destination 'platform=macOS' \
-      -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR =/ {print $3}')/mdbook.app
+APP=$(xcodebuild -project mdbook.xcodeproj -scheme 'MD Book' -destination 'platform=macOS' \
+      -showBuildSettings 2>/dev/null | awk '/ BUILT_PRODUCTS_DIR =/ {print $3}')/MD Book.app
 open -a "$APP" ~/www/rust/elp --args -editorLayout split   # or -editorLayout wysiwyg
 ```
 
@@ -30,7 +30,8 @@ Visual checks without clicking around: `mdbook/Editor/EditorPreviews.swift` has 
 which exercises every construct. Render them in Xcode's canvas, or screenshot the running app
 with `screencapture -l<windowID>` (find the id with `CGWindowListCopyWindowInfo`).
 
-The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not a
+The app target and scheme are "MD Book" (bundle id unchanged, Swift module `MD_Book`) and it
+deploys to macOS 15.6. The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not a
 `project.pbxproj`. Do not hand-edit it. See "Adding swift-markdown" below for why.
 
 ## What exists

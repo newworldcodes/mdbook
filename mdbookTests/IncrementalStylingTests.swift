@@ -9,7 +9,7 @@
 import AppKit
 import SwiftUI
 import Testing
-@testable import mdbook
+@testable import MD_Book
 
 @MainActor
 @Suite("Incremental styling", .serialized)

@@ -7,12 +7,14 @@ editor's invariants, and the cmark source-position bugs the scanner works around
 ## Commands
 
 ```sh
-xcodebuild -project mdbook.xcodeproj -scheme mdbook -destination 'platform=macOS' -quiet build
-xcodebuild -project mdbook.xcodeproj -scheme mdbook -destination 'platform=macOS' test 2>&1 | grep -E 'Test Suite .* (passed|failed)|TEST (SUCCEEDED|FAILED)'
+xcodebuild -project mdbook.xcodeproj -scheme 'MD Book' -destination 'platform=macOS' -quiet build
+xcodebuild -project mdbook.xcodeproj -scheme 'MD Book' -destination 'platform=macOS' test 2>&1 | grep -E 'Test Suite .* (passed|failed)|TEST (SUCCEEDED|FAILED)'
 ```
 
 Run the app on the test corpus: build, then
-`open -a <BUILT_PRODUCTS_DIR>/mdbook.app ~/www/rust/elp --args -editorLayout split`.
+`open -a "<BUILT_PRODUCTS_DIR>/MD Book.app" ~/www/rust/elp --args -editorLayout split`.
+The app target is "MD Book" (module `MD_Book`, so tests use `@testable import MD_Book`);
+it deploys to macOS 15.6, so check availability when using newer APIs.
 
 ## Rules
 

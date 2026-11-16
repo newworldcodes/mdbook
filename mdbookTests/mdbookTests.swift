@@ -6,7 +6,7 @@
 import AppKit
 import Foundation
 import Testing
-@testable import mdbook
+@testable import MD_Book
 
 // MARK: - Block parser
 
