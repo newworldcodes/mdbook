@@ -25,11 +25,26 @@ nonisolated struct HTMLRenderer {
     ]
 
     func render(_ markdown: String) -> String {
-        let document = Document(parsing: LinkResolver.encodingSpacesInLinkDestinations(markdown), options: [.disableSmartOpts])
+        let prepared = MarkdownExtensions.prepare(markdown)
+        let document = Document(parsing: LinkResolver.encodingSpacesInLinkDestinations(prepared.markdown), options: [.disableSmartOpts])
         var output = ""
         var slugs: [String: Int] = [:]
         for block in document.children {
             renderBlock(block, into: &output, slugs: &slugs)
+        }
+        if !prepared.footnotes.isEmpty {
+            output += "<section class=\"footnotes\">\n<hr/>\n<ol>\n"
+            for note in prepared.footnotes {
+                let backlink = "<a class=\"footnote-back\" href=\"#\(idPrefix)fnref-\(note.number)\">↩</a>"
+                var body = render(note.markdown).trimmingCharacters(in: .whitespacesAndNewlines)
+                if body.hasSuffix("</p>") {
+                    body = String(body.dropLast(4)) + " \(backlink)</p>"
+                } else {
+                    body += backlink
+                }
+                output += "<li id=\"\(idPrefix)fn-\(note.number)\">\(body)</li>\n"
+            }
+            output += "</ol>\n</section>\n"
         }
         return output
     }
@@ -96,6 +111,9 @@ nonisolated struct HTMLRenderer {
         var source = code.code
         if source.hasSuffix("\n") { source.removeLast() }
         let language = code.language?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        if language == "math" {
+            return "<div class=\"math\">\(Self.escape(MathText.unicode(fromTeX: source)))</div>\n"
+        }
         let ns = source as NSString
         var html = ""
         var location = 0
@@ -143,7 +161,16 @@ nonisolated struct HTMLRenderer {
     private func inline(_ markup: Markup) -> String {
         switch markup {
         case let text as Markdown.Text:
-            return autolinked(text.string)
+            return MarkdownExtensions.segments(in: text.string).map { segment in
+                switch segment {
+                case .text(let plain):
+                    return autolinked(MarkdownExtensions.replacingEmojiShortcodes(in: plain))
+                case .footnoteReference(let number):
+                    return "<sup class=\"footnote-ref\" id=\"\(idPrefix)fnref-\(number)\"><a href=\"#\(idPrefix)fn-\(number)\">\(number)</a></sup>"
+                case .math(let tex):
+                    return "<span class=\"math\">\(Self.escape(MathText.unicode(fromTeX: tex)))</span>"
+                }
+            }.joined()
         case is SoftBreak:
             return "\n"
         case is LineBreak:

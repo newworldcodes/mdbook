@@ -125,6 +125,20 @@ struct MarkdownStyler {
             }
         }
 
+        for range in spans.math where NSMaxRange(range) <= storage.length {
+            convertToMath(in: range, storage: storage)
+        }
+        for range in spans.footnoteReferences where NSMaxRange(range) <= storage.length {
+            let size = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?.pointSize ?? theme.baseFont.pointSize
+            storage.addAttributes([
+                .font: NSFont.systemFont(ofSize: size * 0.7, weight: .medium),
+                .baselineOffset: size * 0.35,
+                .foregroundColor: theme.accentColor,
+            ], range: range)
+        }
+        for range in spans.footnoteLabels where NSMaxRange(range) <= storage.length {
+            storage.addAttribute(.foregroundColor, value: theme.markerColor, range: range)
+        }
         for range in spans.html where NSMaxRange(range) <= storage.length {
             storage.addAttribute(.foregroundColor, value: theme.markerColor, range: range)
         }
@@ -384,6 +398,16 @@ struct MarkdownStyler {
             if let styled = NSFont(descriptor: descriptor, size: font.pointSize) {
                 storage.addAttribute(.font, value: styled, range: subrange)
             }
+        }
+    }
+
+    /// Math reads as math: serif italic at the surrounding size.
+    private func convertToMath(in range: NSRange, storage: NSTextStorage) {
+        storage.enumerateAttribute(.font, in: range, options: []) { value, subrange, _ in
+            let size = (value as? NSFont)?.pointSize ?? theme.baseFont.pointSize
+            let serif = NSFont.systemFont(ofSize: size).fontDescriptor.withDesign(.serif) ?? NSFont.systemFont(ofSize: size).fontDescriptor
+            let italic = serif.withSymbolicTraits(.italic)
+            storage.addAttribute(.font, value: NSFont(descriptor: italic, size: size) ?? NSFont.systemFont(ofSize: size), range: subrange)
         }
     }
 

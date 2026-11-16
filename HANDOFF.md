@@ -50,6 +50,7 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | Links | `Markdown/LinkResolver.swift`, `HeadingSlug.swift` | Relative paths resolve against the document; folders fall back to README/index/SUMMARY; `#anchor` and `file.md#anchor` use GitHub-style slugs. |
 | Tables | `Markdown/MarkdownTableFormatter.swift`, `TableColumnSizer.swift`, `Editor/MarkdownTableRendering.swift` + styler/layout manager | Caret outside: the table is drawn by the layout manager with wrapping cells, fitted to the editor width (see below). Caret inside: aligned monospaced source; columns re-padded on leave. The preview's `TableGridLayout` uses the same `TableColumnSizer`, so both wrap cells instead of overflowing. |
 | Export | `Markdown/HTMLRenderer.swift`, `Export/BookExport.swift`, `Export/PrintRenderer.swift` | `HTMLRenderer` walks the swift-markdown tree to XHTML-compatible HTML (GitHub heading ids, inline code colours, task boxes, table alignment). File ▸ Export Chapter/Book: HTML (one self-contained file, images as data URIs; a book gets a contents list, `chN-` id prefixes and cross-chapter links rewritten to anchors), PDF, and EPUB 3 (XHTML per chapter, tidied if raw HTML isn't well-formed; zipped by `StoredZip`). PDF/Print (⌘P) and Edit ▸ Copy as Rich Text go HTML → `NSAttributedString` → TextKit 1 text view → `NSPrintOperation`, because WKWebView's content process dies in the sandbox without the network entitlement. Printed tables are sized with `TableColumnSizer` (fixed layout) and images scaled to the page. |
+| Footnotes, math, emoji | `Markdown/MarkdownExtensions.swift`, `Markdown/MathText.swift` | Not parsed by swift-markdown. For rendering, `MarkdownExtensions.prepare` rewrites the source first: footnote definitions extracted, references and inline `$math$` replaced by private-use-character tokens (math hex-encoded so cmark can't touch it), `$$…$$` turned into ```` ```math ````; consumers resolve tokens with `segments(in:)`. Preview: superscript numbers + notes list; exports: linked `<sup>` + footnotes section. Math is TeX→Unicode (`MathText`, not a typesetter). Emoji: GitHub aliases, else Unicode names. The editor keeps the source and styles it (`spans.footnoteReferences/footnoteLabels/math`); cmark reads `[^id]: x` as a link reference definition, hence the line pass and the `[^…]` link special case. |
 | Code highlighting | `Markdown/CodeHighlighter.swift` | Hand-written tokenizer, ~20 languages plus a generic fallback. Used by both editor and preview. Colours in `EditorTheme.color(for:)`. |
 | Tests | `mdbookTests/mdbookTests.swift` | 49 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
 
@@ -170,7 +171,9 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 1. Images inside running text in the WYSIWYG view (block image lines are done).
 2. Incremental restyling for large files (or adopt STTextView).
-3. Footnotes, math, Mermaid, emoji shortcodes.
+3. Mermaid diagrams (shown as source) and real math typesetting: both need a JS library in a
+   WKWebView, i.e. a bundled third-party asset plus the Outgoing Connections entitlement
+   (WebKit's content process dies in the sandbox without it). Decision pending.
 4. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the

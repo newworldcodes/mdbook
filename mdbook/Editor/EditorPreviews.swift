@@ -37,6 +37,21 @@ enum SampleMarkdown {
     ---
 
     Final paragraph with a bare link https://apple.com and an image ![Logo](images/logo.png).
+
+    ## Extras
+
+    Footnotes read naturally[^why], math like $E = mc^2$ or $\\sum_{i=1}^{n} x_i \\leq \\alpha$ stays inline,
+    and emoji shortcodes work :tada: :rocket:.
+
+    $$
+    \\int_0^1 f(x)\\,dx \\approx \\frac{1}{n} \\sum_i f(x_i)
+    $$
+
+    ```mermaid
+    graph TD; A-->B
+    ```
+
+    [^why]: Because books cite things.
     """
 }
 

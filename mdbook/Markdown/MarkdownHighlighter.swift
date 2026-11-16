@@ -76,6 +76,12 @@ nonisolated struct MarkdownSpans: Sendable {
     var links: [Link] = []
     /// HTML blocks and inline tags, dimmed like syntax but never hidden.
     var html: [NSRange] = []
+    /// The id inside each `[^id]` footnote reference (its brackets are markers).
+    var footnoteReferences: [NSRange] = []
+    /// The `[^id]:` label starting each footnote definition.
+    var footnoteLabels: [NSRange] = []
+    /// Inline `$…$` and display `$$…$$` math, dollars included.
+    var math: [NSRange] = []
     /// Syntax markers that can be hidden when the containing paragraph is not being edited.
     var markers: [NSRange] = []
 }
@@ -86,7 +92,77 @@ nonisolated enum MarkdownHighlighter {
         var walker = SpanWalker(text: text, map: MarkdownSourceMap(text))
         walker.visit(document)
         walker.spans.links.sort { $0.text.location < $1.text.location }
+        applyMath(to: &walker.spans, in: text)
+        applyFootnoteDefinitions(to: &walker.spans, in: text)
         return walker.spans
+    }
+
+    /// Dims the `[^id]:` label of footnote definitions. cmark reads most of them as link
+    /// reference definitions, which leave no node behind, so look at the lines directly.
+    private static func applyFootnoteDefinitions(to spans: inout MarkdownSpans, in text: String) {
+        guard text.contains("[^") else { return }
+        let ns = text as NSString
+        let code = spans.codeBlocks.map(\.range)
+        var labels: [NSRange] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, lineRange, _, _ in
+            guard let line, line.contains("]:"), let definition = MarkdownExtensions.footnoteDefinition(line),
+                  !code.contains(where: { NSLocationInRange(lineRange.location, $0) }) else { return }
+            let start = lineRange.location + (line.prefix { $0 == " " }.utf16.count)
+            labels.append(NSRange(location: start, length: ("[^\(definition.id)]:" as NSString).length))
+        }
+        spans.footnoteLabels += labels
+    }
+
+    /// Finds math and drops what cmark wrongly parsed inside it (`$a_1 b_2$` isn't emphasis).
+    private static func applyMath(to spans: inout MarkdownSpans, in text: String) {
+        guard text.contains("$") else { return }
+        let ns = text as NSString
+        let code = spans.codeBlocks.map(\.range) + spans.inlineCode
+        func inCode(_ range: NSRange) -> Bool {
+            code.contains { NSIntersectionRange($0, range).length > 0 }
+        }
+
+        var math = MarkdownExtensions.inlineMathRanges(in: text).map(\.range).filter { !inCode($0) }
+        // Display math: a line starting with $$ through the line ending with $$.
+        var lineStart = 0
+        var openLine: Int?
+        while lineStart < ns.length {
+            let line = ns.lineRange(for: NSRange(location: lineStart, length: 0))
+            let content = ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !inCode(line) {
+                if let start = openLine {
+                    if content.hasSuffix("$$") {
+                        math.append(NSRange(location: start, length: NSMaxRange(line) - start))
+                        openLine = nil
+                    }
+                } else if content.hasPrefix("$$") {
+                    if content.count > 2, content.dropFirst(2).hasSuffix("$$") {
+                        math.append(line)
+                    } else {
+                        openLine = line.location
+                    }
+                }
+            }
+            lineStart = NSMaxRange(line)
+        }
+        guard !math.isEmpty else { return }
+        // Trim line terminators so styling stays inside the lines.
+        math = math.map { range in
+            var range = range
+            while range.length > 0, [0x0A, 0x0D].contains(ns.character(at: NSMaxRange(range) - 1)) { range.length -= 1 }
+            return range
+        }
+
+        func outsideMath(_ range: NSRange) -> Bool {
+            !math.contains { NSIntersectionRange($0, range).length > 0 }
+        }
+        spans.bold = spans.bold.filter(outsideMath)
+        spans.italic = spans.italic.filter(outsideMath)
+        spans.strikethrough = spans.strikethrough.filter(outsideMath)
+        spans.markers = spans.markers.filter(outsideMath)
+        spans.links = spans.links.filter { outsideMath($0.range) }
+        spans.footnoteReferences = spans.footnoteReferences.filter(outsideMath)
+        spans.math = math
     }
 
     /// Positions of cell-separating pipes in a table line (escaped pipes and pipes in
@@ -437,6 +513,15 @@ private nonisolated struct SpanWalker: MarkupWalker {
     }
 
     mutating func visitLink(_ link: Link) {
+        // `[^id]` with a matching `[^id]: …` line is a shortcut reference link to cmark
+        // (the definition reads as a link reference definition); it's a footnote.
+        if let outer = inlineRange(link), outer.length > 3, ns.character(at: outer.location + 1) == 0x5E, // ^
+           ns.character(at: NSMaxRange(outer) - 1) == 0x5D { // ]
+            spans.footnoteReferences.append(NSRange(location: outer.location + 2, length: outer.length - 3))
+            addMarker(NSRange(location: outer.location, length: 2))
+            addMarker(NSRange(location: NSMaxRange(outer) - 1, length: 1))
+            return
+        }
         defer {
             linkDepth += 1
             descendInto(link)
@@ -473,6 +558,12 @@ private nonisolated struct SpanWalker: MarkupWalker {
         guard linkDepth == 0, let range = inlineRange(textNode), range.length > 0 else { return }
         for url in LinkResolver.bareURLs(in: text, range: range) {
             spans.links.append(.init(text: url, destination: ns.substring(with: url), isImage: false, range: url))
+        }
+        // `[^id]` footnote references: hide the brackets, raise the id.
+        for (reference, id) in MarkdownExtensions.footnoteReferences(in: text, range: range) {
+            spans.footnoteReferences.append(id)
+            addMarker(NSRange(location: reference.location, length: id.location - reference.location))
+            addMarker(NSRange(location: NSMaxRange(id), length: NSMaxRange(reference) - NSMaxRange(id)))
         }
     }
 

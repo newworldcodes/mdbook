@@ -44,15 +44,26 @@ nonisolated indirect enum MarkdownBlock: Hashable, Sendable {
     case list(ordered: Bool, items: [MarkdownListItem])
     case table(MarkdownTable)
     case thematicBreak
+    /// Display math, already converted to Unicode.
+    case math(String)
 }
 
 nonisolated enum MarkdownBlockParser {
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         // CommonMark doesn't allow spaces in link destinations, but books often contain
         // `[chapter](my chapter.md)`; encode them so those still parse as links.
-        let prepared = LinkResolver.encodingSpacesInLinkDestinations(markdown)
-        let document = Document(parsing: prepared, options: [.disableSmartOpts])
-        return blocks(in: document.children)
+        let prepared = MarkdownExtensions.prepare(markdown)
+        let source = LinkResolver.encodingSpacesInLinkDestinations(prepared.markdown)
+        let document = Document(parsing: source, options: [.disableSmartOpts])
+        var result = blocks(in: document.children)
+        // Footnotes are listed, numbered, under a rule at the end.
+        if !prepared.footnotes.isEmpty {
+            result.append(.thematicBreak)
+            result.append(.list(ordered: true, items: prepared.footnotes.map {
+                MarkdownListItem(ordinal: $0.number, task: nil, blocks: parse($0.markdown))
+            }))
+        }
+        return result
     }
 
     // MARK: - Blocks
@@ -72,6 +83,7 @@ nonisolated enum MarkdownBlockParser {
             if source.hasSuffix("\n") { source.removeLast() }
             // `language` is the whole info string; the first word names the language.
             let language = code.language?.split(whereSeparator: \.isWhitespace).first.map(String.init)
+            if language == "math" { return .math(MathText.unicode(fromTeX: source)) }
             return .codeBlock(language: language, code: source)
         case let html as HTMLBlock:
             // Raw HTML isn't rendered; show it as source rather than dropping it.
@@ -213,7 +225,22 @@ private nonisolated struct InlineRenderer {
         intent = saved
     }
 
+    /// Appends text from the prepared document: footnote references become superscript
+    /// numbers, math becomes italic Unicode, and emoji shortcodes are replaced.
     private mutating func append(_ string: String) {
+        for segment in MarkdownExtensions.segments(in: string) {
+            switch segment {
+            case .text(let text):
+                appendText(MarkdownExtensions.replacingEmojiShortcodes(in: text))
+            case .footnoteReference(let number):
+                appendText(MathText.superscript(String(number)))
+            case .math(let tex):
+                styled(.emphasized) { $0.appendText(MathText.unicode(fromTeX: tex)) }
+            }
+        }
+    }
+
+    private mutating func appendText(_ string: String) {
         guard !string.isEmpty else { return }
         guard link == nil else {
             pending.append(piece(string, link: link))

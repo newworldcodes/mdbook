@@ -34,6 +34,10 @@ nonisolated enum BookExport {
     hr { border: none; border-top: 1px solid #d2d2d7; margin: 2em 0; }
     ul.tasks { list-style: none; padding-left: 1.2em; }
     nav.toc ol { line-height: 1.8; }
+    .math { font-family: "Times New Roman", Times, serif; font-style: italic; }
+    div.math { text-align: center; font-size: 1.15em; margin: 1em 0; }
+    section.footnotes { font-size: 0.9em; color: #444; }
+    sup.footnote-ref a, a.footnote-back { text-decoration: none; }
     section.chapter { page-break-before: always; }
     """
 

@@ -704,6 +704,88 @@ struct HTMLExportTests {
     }
 }
 
+// MARK: - Footnotes, math and emoji
+
+@Suite("Markdown extensions")
+struct MarkdownExtensionTests {
+    @Test("Footnotes are numbered by first reference and their definitions removed")
+    func footnotes() {
+        let prepared = MarkdownExtensions.prepare("""
+        Second[^b] then first[^a] and again[^b].
+
+        [^a]: The first note.
+        [^b]: The second note,
+            continued.
+        [^unused]: Never referenced.
+        """)
+        #expect(prepared.footnotes.map(\.id) == ["b", "a", "unused"])
+        #expect(prepared.footnotes.map(\.number) == [1, 2, 3])
+        #expect(prepared.footnotes[0].markdown == "The second note,\ncontinued.")
+        #expect(!prepared.markdown.contains("[^"))
+        let paragraph = prepared.markdown.components(separatedBy: "\n")[0]
+        #expect(MarkdownExtensions.segments(in: paragraph) == [
+            .text("Second"), .footnoteReference(number: 1), .text(" then first"), .footnoteReference(number: 2),
+            .text(" and again"), .footnoteReference(number: 1), .text("."),
+        ])
+    }
+
+    @Test("Math is protected from markdown, money and code are left alone")
+    func math() {
+        let prepared = MarkdownExtensions.prepare("Let $a_1 b_2$ hold; it costs $5 and $10.\n\n`$x$` stays.\n\n```\n$y$ [^n]\n```\n\n$$\nx^2\n$$")
+        let first = prepared.markdown.components(separatedBy: "\n")[0]
+        #expect(MarkdownExtensions.segments(in: first) == [.text("Let "), .math(tex: "a_1 b_2"), .text(" hold; it costs $5 and $10.")])
+        #expect(prepared.markdown.contains("`$x$` stays."))
+        #expect(prepared.markdown.contains("```\n$y$ [^n]\n```"))
+        #expect(prepared.markdown.hasSuffix("```math\nx^2\n```"))
+    }
+
+    @Test("TeX becomes readable Unicode")
+    func tex() {
+        #expect(MathText.unicode(fromTeX: "x^2 + y_i^{n+1}") == "x² + yᵢⁿ⁺¹")
+        #expect(MathText.unicode(fromTeX: "\\alpha \\leq \\frac{1}{2}") == "α ≤ ½")
+        #expect(MathText.unicode(fromTeX: "\\sqrt{a+b} \\in \\mathbb{R}") == "√(a + b) ∈ ℝ")
+        #expect(MathText.unicode(fromTeX: "e^{\\pi}") == "e^(π)")
+        #expect(MathText.unicode(fromTeX: "\\frac{a+b}{c}") == "(a + b)⁄c")
+    }
+
+    @Test("Emoji shortcodes, from aliases and Unicode names")
+    func emoji() {
+        #expect(MarkdownExtensions.replacingEmojiShortcodes(in: "Ship it :rocket: :tada: :+1: at 10:30 :not_an_emoji:")
+                == "Ship it 🚀 🎉 👍 at 10:30 :not_an_emoji:")
+    }
+
+    @Test("Exports link footnotes both ways and render math")
+    func html() {
+        let html = HTMLRenderer().render("Claim[^1] with $x^2$ :fire:\n\n[^1]: Source.\n\n$$\\sum_i x_i$$")
+        #expect(html.contains("<sup class=\"footnote-ref\" id=\"fnref-1\"><a href=\"#fn-1\">1</a></sup>"))
+        #expect(html.contains("<span class=\"math\">x²</span> 🔥"))
+        #expect(html.contains("<div class=\"math\">∑ᵢ xᵢ</div>"))
+        #expect(html.contains("<li id=\"fn-1\"><p>Source. <a class=\"footnote-back\" href=\"#fnref-1\">↩</a></p></li>"))
+    }
+
+    @Test("The preview lists footnotes at the end and shows references as superscripts")
+    func preview() {
+        let blocks = MarkdownBlockParser.parse("Claim[^1].\n\n[^1]: Source.")
+        guard case .paragraph(let segments) = blocks.first, case .text(let text) = segments[0] else { Issue.record("expected paragraph"); return }
+        #expect(String(text.characters) == "Claim¹.")
+        #expect(blocks[1] == .thematicBreak)
+        guard case .list(true, let items) = blocks[2] else { Issue.record("expected notes"); return }
+        #expect(items.map(\.ordinal) == [1])
+    }
+
+    @Test("The editor styles references and math, and drops emphasis found inside math")
+    func editor() {
+        let text = "See[^note] and $a_1 b_2$ here.\n\n[^note]: Text."
+        let spans = MarkdownHighlighter.scan(text)
+        let ns = text as NSString
+        #expect(spans.footnoteReferences.map(ns.substring(with:)) == ["note"])
+        #expect(spans.markers.map(ns.substring(with:)).contains("[^"))
+        #expect(spans.footnoteLabels.map(ns.substring(with:)) == ["[^note]:"])
+        #expect(spans.math.map(ns.substring(with:)) == ["$a_1 b_2$"])
+        #expect(spans.italic.isEmpty)
+    }
+}
+
 // MARK: - Code highlighting
 
 @Suite("Code highlighter")

@@ -178,6 +178,12 @@ struct MarkdownBlockView: View {
             MarkdownTableView(table: table)
         case .thematicBreak:
             Divider().padding(.vertical, 4)
+        case .math(let text):
+            Text(text)
+                .font(.system(size: 18, design: .serif).italic())
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .textSelection(.enabled)
         }
     }
 }
