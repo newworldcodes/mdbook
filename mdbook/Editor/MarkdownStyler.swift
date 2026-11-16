@@ -12,8 +12,15 @@ struct MarkdownStyler {
 
     /// Restyles the whole document. `activeRegion` is the paragraph containing the caret
     /// (widened to the whole table when the caret is inside one); markup there stays
-    /// visible so the user can edit it. Tables drawn as grids are fitted to `tableWidth`.
-    func applyAll(to storage: NSTextStorage, spans: MarkdownSpans, activeRegion: NSRange?, tableWidth: CGFloat = .greatestFiniteMagnitude) {
+    /// visible so the user can edit it. Rendered tables and images are fitted to `blockWidth`;
+    /// `loadImage` resolves an image destination (nil while it isn't available).
+    func applyAll(
+        to storage: NSTextStorage,
+        spans: MarkdownSpans,
+        activeRegion: NSRange?,
+        blockWidth: CGFloat = .greatestFiniteMagnitude,
+        loadImage: ((String) -> NSImage?)? = nil
+    ) {
         let full = NSRange(location: 0, length: storage.length)
         guard full.length > 0 else { return }
 
@@ -140,7 +147,10 @@ struct MarkdownStyler {
 
         // Last, so cells are built from fully styled text with markers known.
         for table in spans.tables where rendersAsGrid(table, activeRegion: activeRegion) {
-            renderTable(table, storage: storage, width: tableWidth)
+            renderTable(table, storage: storage, width: blockWidth)
+        }
+        if theme.mode == .wysiwyg, let loadImage {
+            renderImageLines(spans: spans, storage: storage, activeRegion: activeRegion, width: blockWidth, loadImage: loadImage)
         }
 
         storage.endEditing()
@@ -221,9 +231,65 @@ struct MarkdownStyler {
         let lineHeight = ceil(font.ascender - font.descender + font.leading)
         let rendering = MarkdownTableRendering(range: table.range, rows: rows, availableWidth: width, minimumLineHeight: lineHeight)
 
-        storage.addAttribute(.markdownTableRendering, value: rendering, range: table.range)
+        attach(rendering, to: storage)
         for line in table.lines {
             storage.addAttribute(.markdownHidden, value: true, range: line)
+        }
+    }
+
+    /// Stores a rendering on its source. When the source is hidden, the rendering also
+    /// covers the final line terminator: that terminator starts a line fragment of its own
+    /// (the hidden glyphs before it joined the previous fragment), and the coordinator can
+    /// only collapse it if it knows it belongs to the rendering.
+    private func attach(_ rendering: MarkdownBlockRendering, to storage: NSTextStorage) {
+        var range = rendering.range
+        if rendering.hidesSource, NSMaxRange(range) < storage.length,
+           [0x0A, 0x0D].contains((storage.string as NSString).character(at: NSMaxRange(range))) {
+            range.length += 1
+        }
+        storage.addAttribute(.markdownBlockRendering, value: rendering, range: range)
+    }
+
+    // MARK: - Images
+
+    /// Lines made only of images (and the links around linked badges) show the images
+    /// themselves: in place of the hidden source when the caret is elsewhere, or under the
+    /// source while it's being edited. Images inside running text stay as their alt text.
+    private func renderImageLines(spans: MarkdownSpans, storage: NSTextStorage, activeRegion: NSRange?, width: CGFloat, loadImage: (String) -> NSImage?) {
+        let ns = storage.string as NSString
+        let images = spans.links.filter(\.isImage)
+        guard !images.isEmpty else { return }
+        let byLine = Dictionary(grouping: images) { ns.lineRange(for: NSRange(location: $0.range.location, length: 0)).location }
+
+        for (lineStart, lineImages) in byLine {
+            var lineEnd = 0
+            ns.getLineStart(nil, end: nil, contentsEnd: &lineEnd, for: NSRange(location: lineStart, length: 0))
+            let line = NSRange(location: lineStart, length: lineEnd - lineStart)
+            guard line.length > 0, NSMaxRange(line) <= storage.length,
+                  storage.attribute(.markdownBlockRendering, at: line.location, effectiveRange: nil) == nil else { continue }
+
+            // Everything on the line must be an image, link syntax around one, or whitespace.
+            var covered = Array(repeating: false, count: line.length)
+            for range in lineImages.map(\.range) + spans.markers {
+                let overlap = NSIntersectionRange(range, line)
+                for index in overlap.location..<NSMaxRange(overlap) { covered[index - line.location] = true }
+            }
+            let onlyImages = (0..<line.length).allSatisfy { offset in
+                covered[offset] || [0x20, 0x09].contains(ns.character(at: line.location + offset))
+            }
+            guard onlyImages else { continue }
+
+            let loaded = lineImages.sorted { $0.range.location < $1.range.location }.compactMap { image in
+                loadImage(image.destination).map { (image: $0, source: image.range.location) }
+            }
+            guard loaded.count == lineImages.count else { continue }
+
+            let hides = theme.hidesMarkers && !(activeRegion.map { intersects($0, line) } ?? false)
+            let rendering = MarkdownImageRendering(range: line, images: loaded, availableWidth: width, hidesSource: hides)
+            attach(rendering, to: storage)
+            if hides {
+                storage.addAttribute(.markdownHidden, value: true, range: line)
+            }
         }
     }
 

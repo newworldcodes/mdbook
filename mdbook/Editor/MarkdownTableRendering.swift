@@ -2,15 +2,13 @@
 //  MarkdownTableRendering.swift
 //  mdbook
 //
-//  A table laid out to fit the editor's width, with cells that wrap. When the caret is
-//  outside a table, the styler hides the table's source glyphs and stores one of these on
-//  its characters; the coordinator reserves its height as the first line fragment and the
-//  layout manager draws it there. The text storage still holds only the markdown source.
+//  A table laid out to fit the editor's width, with cells that wrap, drawn in place of
+//  the table's hidden source when the caret is outside it.
 //
 
 import AppKit
 
-final class MarkdownTableRendering: NSObject {
+final class MarkdownTableRendering: MarkdownBlockRendering {
     struct Cell {
         var text: NSAttributedString
         /// Where the cell's content lives in the source, for placing the caret on click.
@@ -18,26 +16,15 @@ final class MarkdownTableRendering: NSObject {
     }
 
     static let padding = NSSize(width: 10, height: 6)
-    /// Space above and below the drawn table.
-    static let margin: CGFloat = 4
 
-    /// The table's source (without the final line terminator).
-    let range: NSRange
-    var location: Int { range.location }
-    /// Height of any visible content sharing the table's line fragment above it (the
-    /// hidden header's glyphs join the fragment of the line before). Set during layout.
-    var offsetInFragment: CGFloat = 0
     /// The header row first.
     let rows: [[Cell]]
     let columnWidths: [CGFloat]
     let rowHeights: [CGFloat]
 
-    var tableSize: NSSize {
+    override var size: NSSize {
         NSSize(width: columnWidths.reduce(0, +), height: rowHeights.reduce(0, +))
     }
-
-    /// The height to reserve in the text layout.
-    var reservedHeight: CGFloat { tableSize.height + Self.margin * 2 }
 
     /// Measures `rows` (each padded to the header's column count) and fits them to `width`.
     init(range: NSRange, rows: [[Cell]], availableWidth: CGFloat, minimumLineHeight: CGFloat) {
@@ -58,7 +45,6 @@ final class MarkdownTableRendering: NSObject {
         }
         let widths = TableColumnSizer.widths(natural: natural, minimum: minimum, available: availableWidth)
 
-        self.range = range
         self.rows = rows
         self.columnWidths = widths
         self.rowHeights = rows.map { row in
@@ -70,12 +56,13 @@ final class MarkdownTableRendering: NSObject {
             }.max() ?? 0
             return max(tallest, minimumLineHeight) + Self.padding.height * 2
         }
+        super.init(range: range, hidesSource: true)
     }
 
     // MARK: Drawing
 
     /// Draws the table with its top-left corner at `frame.origin` (flipped coordinates).
-    func draw(in frame: NSRect, headerFill: NSColor, gridColor: NSColor) {
+    override func draw(in frame: NSRect, headerFill: NSColor, gridColor: NSColor) {
         guard let headerHeight = rowHeights.first else { return }
         NSGraphicsContext.saveGraphicsState()
         let outline = NSBezierPath(roundedRect: frame.insetBy(dx: 0.5, dy: 0.5), xRadius: 5, yRadius: 5)
@@ -123,7 +110,7 @@ final class MarkdownTableRendering: NSObject {
     // MARK: Hit testing
 
     /// The source location of the cell under `point` (relative to the table's top-left).
-    func sourceLocation(at point: NSPoint) -> Int? {
+    override func sourceLocation(at point: NSPoint) -> Int? {
         guard point.x >= 0, point.y >= 0 else { return nil }
         var y: CGFloat = 0
         for (rowIndex, height) in rowHeights.enumerated() {
@@ -147,9 +134,4 @@ final class MarkdownTableRendering: NSObject {
             .map { ceil(text.attributedSubstring(from: $0).size().width) + 1 }
             .max() ?? 0
     }
-}
-
-extension NSAttributedString.Key {
-    /// A `MarkdownTableRendering`, present on every character of a table drawn as a grid.
-    static let markdownTableRendering = NSAttributedString.Key("mdbook.tableRendering")
 }

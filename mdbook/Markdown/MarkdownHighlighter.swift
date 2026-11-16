@@ -44,6 +44,8 @@ nonisolated struct MarkdownSpans: Sendable {
         var text: NSRange
         var destination: String
         var isImage: Bool
+        /// The whole construct including its syntax (`![alt](src)`); equals `text` for bare URLs.
+        var range: NSRange
     }
 
     struct Table: Sendable {
@@ -444,7 +446,7 @@ private nonisolated struct SpanWalker: MarkupWalker {
         guard let outer = inlineRange(link), let inner = childrenRange(link),
               let (opening, closing) = delimiters(outer, around: inner), opening.length > 0,
               [0x5B, 0x3C].contains(ns.character(at: opening.location)) else { return } // [ <
-        spans.links.append(.init(text: inner, destination: link.destination ?? "", isImage: false))
+        spans.links.append(.init(text: inner, destination: link.destination ?? "", isImage: false, range: outer))
         addMarker(opening)
         addMarker(closing)
     }
@@ -458,7 +460,7 @@ private nonisolated struct SpanWalker: MarkupWalker {
         guard let outer = inlineRange(image), let inner = childrenRange(image),
               let (opening, closing) = delimiters(outer, around: inner), opening.length >= 2,
               ns.character(at: opening.location) == 0x21 else { return } // !
-        spans.links.append(.init(text: inner, destination: image.source ?? "", isImage: true))
+        spans.links.append(.init(text: inner, destination: image.source ?? "", isImage: true, range: outer))
         addMarker(opening)
         addMarker(closing)
     }
@@ -470,7 +472,7 @@ private nonisolated struct SpanWalker: MarkupWalker {
     mutating func visitText(_ textNode: Markdown.Text) {
         guard linkDepth == 0, let range = inlineRange(textNode), range.length > 0 else { return }
         for url in LinkResolver.bareURLs(in: text, range: range) {
-            spans.links.append(.init(text: url, destination: ns.substring(with: url), isImage: false))
+            spans.links.append(.init(text: url, destination: ns.substring(with: url), isImage: false, range: url))
         }
     }
 

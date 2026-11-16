@@ -164,6 +164,7 @@ struct DocumentAreaView: View {
                         text: textBinding,
                         mode: .wysiwyg,
                         onOpenLink: model.open(linkDestination:),
+                        documentURL: selection,
                         anchorRequest: model.pendingAnchor
                     )
                 case .split:
@@ -172,6 +173,7 @@ struct DocumentAreaView: View {
                             text: textBinding,
                             mode: .source,
                             onOpenLink: model.open(linkDestination:),
+                            documentURL: selection,
                             anchorRequest: model.pendingAnchor,
                             onScroll: { sourceScrollFraction = $0 }
                         )

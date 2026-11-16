@@ -69,7 +69,7 @@ final class MarkdownTextView: NSTextView {
     // MARK: - Task checkboxes
 
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 1, toggleTaskCheckbox(at: event) || enterRenderedTable(at: event) {
+        if event.clickCount == 1, toggleTaskCheckbox(at: event) || enterRenderedBlock(at: event) {
             return
         }
         super.mouseDown(with: event)
@@ -84,19 +84,19 @@ final class MarkdownTextView: NSTextView {
         if newSize.width != oldWidth { onWidthChange?() }
     }
 
-    /// A click on a rendered table puts the caret in the clicked cell's source, which
-    /// switches the table to editable source.
-    private func enterRenderedTable(at event: NSEvent) -> Bool {
+    /// A click on a rendered table or image puts the caret in its source (the clicked cell
+    /// or image), which switches it to editable source.
+    private func enterRenderedBlock(at event: NSEvent) -> Bool {
         guard let layoutManager = layoutManager as? MarkdownLayoutManager, let textContainer else { return false }
         let point = convert(event.locationInWindow, from: nil)
         let containerPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
         var fragmentGlyphs = NSRange()
         _ = layoutManager.lineFragmentRect(forGlyphAt: layoutManager.glyphIndex(for: containerPoint, in: textContainer), effectiveRange: &fragmentGlyphs)
         let characters = layoutManager.characterRange(forGlyphRange: fragmentGlyphs, actualGlyphRange: nil)
-        guard let rendering = layoutManager.tableRendering(in: characters),
-              let frame = layoutManager.tableFrame(for: rendering, origin: textContainerOrigin),
+        guard let rendering = layoutManager.blockRendering(in: characters),
+              let frame = layoutManager.frame(for: rendering, origin: textContainerOrigin),
               frame.contains(point) else { return false }
-        let location = rendering.sourceLocation(at: NSPoint(x: point.x - frame.minX, y: point.y - frame.minY)) ?? rendering.location
+        let location = rendering.sourceLocation(at: NSPoint(x: point.x - frame.minX, y: point.y - frame.minY)) ?? rendering.range.location
         setSelectedRange(NSRange(location: location, length: 0))
         return true
     }
@@ -246,5 +246,134 @@ final class MarkdownTextView: NSTextView {
         // Case 3: wrap the selection (or insert an empty pair and park the caret inside).
         insertText(marker + selected + marker, replacementRange: selection)
         setSelectedRange(NSRange(location: selection.location + markerLength, length: selection.length))
+    }
+
+    // MARK: - Dropping and pasting images
+
+    /// The file being edited; dropped and pasted images are saved relative to it.
+    var documentURL: URL?
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "svg", "webp", "heic", "tif", "tiff", "bmp"]
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + [.fileURL]
+    }
+
+    override func dragOperation(for dragInfo: NSDraggingInfo, type: NSPasteboard.PasteboardType) -> NSDragOperation {
+        if type == .fileURL, documentURL != nil, !imageFiles(on: dragInfo.draggingPasteboard).isEmpty {
+            return .copy
+        }
+        return super.dragOperation(for: dragInfo, type: type)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let files = imageFiles(on: sender.draggingPasteboard)
+        guard !files.isEmpty, documentURL != nil else { return super.performDragOperation(sender) }
+        let location = characterIndexForInsertion(at: convert(sender.draggingLocation, from: nil))
+        return insertImages(files.compactMap(importImage(at:)), replacing: NSRange(location: location, length: 0))
+    }
+
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        let selection = selectedRange()
+
+        // Image files copied in Finder, or image data such as a screenshot.
+        let files = imageFiles(on: pasteboard)
+        if documentURL != nil, !files.isEmpty {
+            if !insertImages(files.compactMap(importImage(at:)), replacing: selection) { NSSound.beep() }
+            return
+        }
+        if documentURL != nil, pasteboard.string(forType: .string) == nil, let image = NSImage(pasteboard: pasteboard) {
+            if !insertImages([savePastedImage(image)].compactMap { $0 }, replacing: selection) { NSSound.beep() }
+            return
+        }
+
+        // A URL pasted over selected text links the text.
+        let ns = string as NSString
+        if selection.length > 0, let pasted = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           Self.looksLikeURL(pasted) {
+            let label = ns.substring(with: selection)
+            if !label.contains("\n") {
+                insertText("[\(label)](\(pasted))", replacementRange: selection)
+                return
+            }
+        }
+        super.paste(sender)
+    }
+
+    static func looksLikeURL(_ string: String) -> Bool {
+        guard !string.isEmpty, !string.contains(where: \.isWhitespace),
+              let url = URL(string: string), let scheme = url.scheme?.lowercased() else { return false }
+        return ["http", "https", "mailto"].contains(scheme)
+    }
+
+    private func imageFiles(on pasteboard: NSPasteboard) -> [URL] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.filter { Self.imageExtensions.contains($0.pathExtension.lowercased()) }
+    }
+
+    /// Inserts image markdown on lines of its own. Returns false if there was nothing to insert.
+    private func insertImages(_ markdown: [String], replacing range: NSRange) -> Bool {
+        guard !markdown.isEmpty else { return false }
+        let ns = string as NSString
+        var text = markdown.joined(separator: "\n")
+        if range.location > 0, ns.character(at: range.location - 1) != 0x0A { text = "\n" + text }
+        if NSMaxRange(range) < ns.length, ns.character(at: NSMaxRange(range)) != 0x0A { text += "\n" }
+        insertText(text, replacementRange: range)
+        return true
+    }
+
+    /// Markdown for an image file: linked where it is if it's already beside the document
+    /// (or below it), otherwise copied into an `images` folder next to the document.
+    private func importImage(at source: URL) -> String? {
+        guard let folder = documentURL?.deletingLastPathComponent().standardizedFileURL else { return nil }
+        let name = source.deletingPathExtension().lastPathComponent
+        let sourcePath = source.standardizedFileURL.path
+        if sourcePath.hasPrefix(folder.path + "/") {
+            return Self.imageMarkdown(alt: name, relativePath: String(sourcePath.dropFirst(folder.path.count + 1)))
+        }
+        do {
+            let destination = try Self.uniqueURL(in: folder.appendingPathComponent("images"), name: source.lastPathComponent)
+            try FileManager.default.copyItem(at: source, to: destination)
+            return Self.imageMarkdown(alt: name, relativePath: "images/" + destination.lastPathComponent)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Saves pasted image data as a PNG in the `images` folder next to the document.
+    private func savePastedImage(_ image: NSImage) -> String? {
+        guard let folder = documentURL?.deletingLastPathComponent(),
+              let tiff = image.tiffRepresentation,
+              let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let name = "Pasted image \(formatter.string(from: Date())).png"
+        do {
+            let destination = try Self.uniqueURL(in: folder.appendingPathComponent("images"), name: name)
+            try png.write(to: destination)
+            return Self.imageMarkdown(alt: "Pasted image", relativePath: "images/" + destination.lastPathComponent)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func imageMarkdown(alt: String, relativePath: String) -> String {
+        // CommonMark destinations can't contain spaces; encode them (the resolver decodes).
+        "![\(alt)](\(relativePath.replacingOccurrences(of: " ", with: "%20")))"
+    }
+
+    /// `folder/name`, or `folder/name-2`, `-3`… if taken. Creates `folder` if needed.
+    private static func uniqueURL(in folder: URL, name: String) throws -> URL {
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = folder.appendingPathComponent(name)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent(ext.isEmpty ? "\(base)-\(counter)" : "\(base)-\(counter).\(ext)")
+            counter += 1
+        }
+        return candidate
     }
 }

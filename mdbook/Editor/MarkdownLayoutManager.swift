@@ -33,20 +33,20 @@ final class MarkdownLayoutManager: NSLayoutManager {
             return (origin.x + padding - panelHorizontalPadding / 2, usedWidth + panelHorizontalPadding)
         }
 
-        forEachRun(of: .markdownTableRendering, in: characterRange, storage: textStorage) { range in
-            guard let rendering = textStorage.attribute(.markdownTableRendering, at: range.location, effectiveRange: nil) as? MarkdownTableRendering,
-                  let frame = tableFrame(for: rendering, origin: origin) else { return }
+        forEachRun(of: .markdownBlockRendering, in: characterRange, storage: textStorage) { range in
+            guard let rendering = textStorage.attribute(.markdownBlockRendering, at: range.location, effectiveRange: nil) as? MarkdownBlockRendering,
+                  let frame = frame(for: rendering, origin: origin) else { return }
             rendering.draw(in: frame, headerFill: tableHeaderBackground, gridColor: gridColor)
         }
     }
 
-    /// The rendered table whose (hidden) source falls in `characters`, if any. A table's
-    /// glyphs join the line fragment of the line before it, so look across the whole range.
-    func tableRendering(in characters: NSRange) -> MarkdownTableRendering? {
+    /// The block rendering whose source falls in `characters`, if any. Hidden glyphs join
+    /// the line fragment of the line before, so look across the whole range.
+    func blockRendering(in characters: NSRange) -> MarkdownBlockRendering? {
         guard let textStorage, NSMaxRange(characters) <= textStorage.length else { return nil }
-        var found: MarkdownTableRendering?
-        textStorage.enumerateAttribute(.markdownTableRendering, in: characters, options: []) { value, _, stop in
-            if let rendering = value as? MarkdownTableRendering {
+        var found: MarkdownBlockRendering?
+        textStorage.enumerateAttribute(.markdownBlockRendering, in: characters, options: []) { value, _, stop in
+            if let rendering = value as? MarkdownBlockRendering {
                 found = rendering
                 stop.pointee = true
             }
@@ -54,15 +54,20 @@ final class MarkdownLayoutManager: NSLayoutManager {
         return found
     }
 
-    /// Where a rendered table is drawn, in the coordinates `origin` is given in. The table
-    /// sits in the tall line fragment the coordinator reserved for its first line.
-    func tableFrame(for rendering: MarkdownTableRendering, origin: NSPoint) -> NSRect? {
-        guard let textStorage, rendering.location < textStorage.length else { return nil }
-        let glyph = glyphIndexForCharacter(at: rendering.location)
+    /// Where a block rendering is drawn, in the coordinates `origin` is given in: below any
+    /// visible text in the line fragment the coordinator grew for its anchor.
+    func frame(for rendering: MarkdownBlockRendering, origin: NSPoint) -> NSRect? {
+        guard let textStorage, rendering.anchor < textStorage.length else { return nil }
+        let glyph = glyphIndexForCharacter(at: rendering.anchor)
         let fragment = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
         let padding = textContainers.first?.lineFragmentPadding ?? 0
-        let size = rendering.tableSize
-        return NSRect(x: origin.x + fragment.minX + padding, y: origin.y + fragment.minY + rendering.offsetInFragment + MarkdownTableRendering.margin, width: size.width, height: size.height)
+        let size = rendering.size
+        return NSRect(
+            x: origin.x + fragment.minX + padding,
+            y: origin.y + fragment.minY + rendering.offsetInFragment + MarkdownBlockRendering.margin,
+            width: size.width,
+            height: size.height
+        )
     }
 
     // MARK: - Panels

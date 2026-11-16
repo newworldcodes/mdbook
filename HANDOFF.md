@@ -63,15 +63,28 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 - The "active region" is the caret's paragraph, widened to the whole table when inside one.
 - `MarkdownLayoutManager.drawBackground` paints code block panels (`.markdownCodeBlock`),
   editing-mode table header panels (`.markdownTableHeader`) and rendered tables.
-- Rendered tables: the styler builds a `MarkdownTableRendering` (cells = the styled source
-  runs minus markers; widths from `TableColumnSizer` for the container width) and stores it
-  on the table's characters, then hides every source glyph. The coordinator's
-  `shouldSetLineFragmentRect` delegate grows the fragment holding the table's first
-  character by the table height and collapses the rest; the layout manager draws the table
-  there. Hidden glyphs join the *previous* line's fragment, so always look the table up
-  across a fragment's character range (`MarkdownLayoutManager.tableRendering(in:)`), never
-  at its first character. A click inside the drawn table puts the caret in that cell's
-  source; a width change restyles (coalesced) so tables refit.
+- Block renderings (`MarkdownBlockRendering`: `MarkdownTableRendering`,
+  `MarkdownImageRendering`) are things the editor draws for a run of source. The styler
+  stores one on the source's characters (`.markdownBlockRendering`); the coordinator's
+  `shouldSetLineFragmentRect` delegate grows the fragment holding the rendering's `anchor`
+  by its height (below any visible text in that fragment) and collapses fragments made only
+  of hidden source; the layout manager draws it there; a click inside puts the caret in the
+  matching source. Hidden glyphs join the *previous* line's fragment and the hidden line's
+  terminator starts a fragment of its own, so: look renderings up across a fragment's
+  character range (`MarkdownLayoutManager.blockRendering(in:)`), and a hidden rendering's
+  attribute also covers that terminator so it collapses. Entering or leaving a line with a
+  rendering restyles fully; a width change restyles (coalesced) so renderings refit.
+  - Tables (caret outside): source hidden; cells are the styled source runs minus markers,
+    column widths from `TableColumnSizer` for the container width.
+  - Image lines (only images, linked badges and whitespace on the line): the images replace
+    the hidden source when the caret is elsewhere, and sit under the visible source while
+    it's edited. Images inside running text stay as alt text. The coordinator loads local
+    images synchronously (cached; misses retried after each edit) and remote ones in the
+    background, which needs the Outgoing Connections entitlement (not enabled yet; enable it
+    in Signing & Capabilities, never by editing `project.xcproj`).
+- Dropping or pasting image files links them where they are if they're inside the
+  document's folder, else copies them into `images/` beside the document; pasted image data
+  is saved there as a PNG. Pasting a URL over selected text makes a link.
 - Typing attributes are scrubbed on every selection change so links, hidden flags and
   strikethrough never leak into new text.
 - `isRichText = false`, smart quotes/dashes off, spell check off by default.
@@ -149,9 +162,9 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 1. SUMMARY.md-driven chapter order with previous/next navigation.
 2. Project-wide search.
-3. Inline images in the WYSIWYG view (text attachments).
+3. Images inside running text in the WYSIWYG view (block image lines are done).
 4. Incremental restyling for large files (or adopt STTextView).
-5. Tab/Shift-Tab list indentation, paste URL over selection, drop images into the project.
+5. Tab/Shift-Tab list indentation.
 6. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
 7. Export to HTML/PDF, printing, copy as rich text.
 8. Footnotes, math, Mermaid, emoji shortcodes.

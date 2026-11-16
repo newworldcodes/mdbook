@@ -13,6 +13,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     @Binding var text: String
     var mode: EditorTheme.Mode
     var onOpenLink: (String) -> Void
+    /// The file being edited, for resolving relative image paths and saving dropped images.
+    var documentURL: URL? = nil
     /// Scroll to the heading matching this anchor whenever a new request arrives.
     var anchorRequest: AnchorRequest? = nil
     /// Reports the vertical scroll position as a 0...1 fraction (used for split-pane sync).
@@ -26,6 +28,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         let (scrollView, textView) = MarkdownTextView.makeScrollable()
         let coordinator = context.coordinator
         coordinator.textView = textView
+        textView.documentURL = documentURL
         textView.delegate = coordinator
         textView.layoutManager?.delegate = coordinator
         coordinator.configure(textView)
@@ -49,6 +52,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         guard let textView = coordinator.textView else { return }
+        textView.documentURL = documentURL
 
         var needsRestyle = false
         if coordinator.theme.mode != mode {
@@ -84,6 +88,10 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var spans = MarkdownSpans()
         private var scrollObserver: NSObjectProtocol?
         private var restyleForWidthPending = false
+        private let imageCache = NSCache<NSString, NSImage>()
+        /// Local images that failed to load; cleared on every edit (a dropped image may now exist).
+        private var missingImages = Set<String>()
+        private var loadingImages = Set<String>()
 
         init(parent: MarkdownEditorView) {
             self.parent = parent
@@ -205,21 +213,28 @@ struct MarkdownEditorView: NSViewRepresentable {
             spans = MarkdownHighlighter.scan(storage.string)
             let caretParagraph = paragraphRange(for: textView)
             activeParagraph = caretParagraph
-            MarkdownStyler(theme: theme).applyAll(to: storage, spans: spans, activeRegion: activeRegion(for: caretParagraph), tableWidth: tableWidth(of: textView))
+            MarkdownStyler(theme: theme).applyAll(
+                to: storage,
+                spans: spans,
+                activeRegion: activeRegion(for: caretParagraph),
+                blockWidth: blockWidth(of: textView),
+                loadImage: { [weak self] in self?.image(for: $0) }
+            )
             invalidateGlyphs(in: NSRange(location: 0, length: storage.length), textView: textView)
             textView.typingAttributes = theme.baseAttributes
         }
 
-        /// The width a rendered table may use: the text container minus its line padding.
-        private func tableWidth(of textView: NSTextView) -> CGFloat {
+        /// The width a rendered table or image may use: the text container minus its padding.
+        private func blockWidth(of textView: NSTextView) -> CGFloat {
             guard let container = textView.textContainer else { return .greatestFiniteMagnitude }
             return max(0, container.size.width - container.lineFragmentPadding * 2)
         }
 
-        /// Rendered tables are fitted to the width, so refit them when it changes. Live
-        /// resizing sends many changes; restyle once per run-loop turn.
+        /// Rendered tables and images are fitted to the width, so refit them when it changes.
+        /// Live resizing sends many changes; restyle once per run-loop turn.
         private func widthDidChange() {
-            guard theme.mode == .wysiwyg, !spans.tables.isEmpty, !restyleForWidthPending else { return }
+            let hasBlocks = !spans.tables.isEmpty || spans.links.contains(where: \.isImage)
+            guard theme.mode == .wysiwyg, hasBlocks, !restyleForWidthPending else { return }
             restyleForWidthPending = true
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
@@ -245,10 +260,10 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard newRange != activeParagraph else { return }
             formatTableIfLeft(from: activeParagraph, to: newRange)
 
-            // Entering or leaving a table changes fonts and kerning, so restyle fully.
-            let oldInTable = activeParagraph.map { activeRegion(for: $0) != $0 } ?? false
-            let newInTable = activeRegion(for: newRange) != newRange
-            if oldInTable || newInTable {
+            // Entering or leaving a table or image line swaps its rendering, so restyle fully.
+            let oldIsBlock = activeParagraph.map { activeRegion(for: $0) != $0 || hasBlockRendering(in: $0, storage: storage) } ?? false
+            let newIsBlock = activeRegion(for: newRange) != newRange || hasBlockRendering(in: newRange, storage: storage)
+            if oldIsBlock || newIsBlock {
                 restyleEverything()
                 return
             }
@@ -260,6 +275,52 @@ struct MarkdownEditorView: NSViewRepresentable {
             styler.setMarkersVisible(true, in: newRange, storage: storage)
             invalidateGlyphs(in: newRange, textView: textView)
             activeParagraph = newRange
+        }
+
+        private func hasBlockRendering(in range: NSRange, storage: NSTextStorage) -> Bool {
+            guard NSMaxRange(range) <= storage.length, range.length > 0 else { return false }
+            var found = false
+            storage.enumerateAttribute(.markdownBlockRendering, in: range, options: []) { value, _, stop in
+                if value != nil {
+                    found = true
+                    stop.pointee = true
+                }
+            }
+            return found
+        }
+
+        // MARK: Images
+
+        /// The image an image destination refers to, if it's available now. Local files load
+        /// synchronously (and are cached); remote ones load in the background and restyle.
+        private func image(for destination: String) -> NSImage? {
+            switch LinkResolver.resolve(destination, relativeTo: parent.documentURL) {
+            case .file(let url, _):
+                let key = url.path as NSString
+                if let cached = imageCache.object(forKey: key) { return cached }
+                guard !missingImages.contains(url.path) else { return nil }
+                guard let image = NSImage(contentsOf: url), image.size.width > 0 else {
+                    missingImages.insert(url.path)
+                    return nil
+                }
+                imageCache.setObject(image, forKey: key)
+                return image
+            case .external(let url):
+                let key = url.absoluteString as NSString
+                if let cached = imageCache.object(forKey: key) { return cached }
+                guard ["http", "https"].contains(url.scheme?.lowercased()), !loadingImages.contains(url.absoluteString) else { return nil }
+                loadingImages.insert(url.absoluteString)
+                Task { [weak self] in
+                    // Needs the Outgoing Connections entitlement; without it this quietly fails.
+                    guard let (data, _) = try? await URLSession.shared.data(from: url),
+                          let image = NSImage(data: data), image.size.width > 0, let self else { return }
+                    self.imageCache.setObject(image, forKey: key)
+                    self.restyleEverything()
+                }
+                return nil
+            case .anchor, .invalid:
+                return nil
+            }
         }
 
         private func paragraphRange(for textView: NSTextView) -> NSRange {
@@ -282,6 +343,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             isPushingChange = true
             parent.text = textView.string
             isPushingChange = false
+            missingImages.removeAll()
             restyleEverything()
         }
 
@@ -314,10 +376,10 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         // MARK: NSLayoutManagerDelegate
 
-        /// The line fragment holding a rendered table's first character grows by the drawn
-        /// table's height and the table's other fragments collapse, so the grid the layout
-        /// manager draws has room and nothing else does. Hidden glyphs join the fragment of
-        /// the line before, so the table is found anywhere in the fragment, not at its start.
+        /// The line fragment holding a block rendering's anchor grows by the rendering's
+        /// height, and fragments made only of its hidden source collapse, so what the layout
+        /// manager draws has room. Hidden glyphs join the fragment of the line before, so the
+        /// rendering is found anywhere in the fragment, not at its start.
         func layoutManager(
             _ layoutManager: NSLayoutManager,
             shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
@@ -327,18 +389,19 @@ struct MarkdownEditorView: NSViewRepresentable {
             forGlyphRange glyphRange: NSRange
         ) -> Bool {
             let characters = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            guard let rendering = (layoutManager as? MarkdownLayoutManager)?.tableRendering(in: characters) else { return false }
+            guard let rendering = (layoutManager as? MarkdownLayoutManager)?.blockRendering(in: characters) else { return false }
 
-            if NSLocationInRange(rendering.location, characters) {
-                // Keep the height of whatever precedes the table in this fragment.
-                let leading = characters.location < rendering.location ? lineFragmentUsedRect.pointee.height : 0
+            if NSLocationInRange(rendering.anchor, characters) {
+                // Keep the height of whatever visible text shares this fragment.
+                let hasVisibleText = !rendering.hidesSource || characters.location < rendering.range.location
+                let leading = hasVisibleText ? lineFragmentUsedRect.pointee.height : 0
                 rendering.offsetInFragment = leading
                 lineFragmentRect.pointee.size.height = leading + rendering.reservedHeight
                 lineFragmentUsedRect.pointee.size.height = leading + rendering.reservedHeight
                 return true
             }
-            // Only collapse fragments made entirely of the table's hidden source.
-            guard characters.location > rendering.location,
+            // Only collapse fragments made entirely of hidden source.
+            guard rendering.hidesSource, characters.location > rendering.range.location,
                   NSMaxRange(characters) <= NSMaxRange(rendering.range) + 1 else { return false }
             lineFragmentRect.pointee.size.height = 0
             lineFragmentUsedRect.pointee.size.height = 0
