@@ -76,20 +76,25 @@ is cmark-gfm with source ranges on every node, which removes a class of edge cas
 styles, reference links, indented code, HTML blocks, setext corner cases) the regexes can't
 get right.
 
-### Blocker hit: adding the package
+### Package added
 
-There is no tooling in this environment to add a Swift package to the new `.xcproj` format,
-and a hand-written guess at the schema made Xcode drop every file from the project until the
-file was restored from backup. Strings in `DevToolsCore.framework` show the serializer knows
-these keys, in this order: `packages`, then per package `kind`, `repository`, `path`,
-`version`, `traits`, `version-range`, `branch`, `revision`, `organization`; per target
-`dependencies`, `package`, `product`, `product-name`, `product-id`, `products-group`. The
-nesting is unknown. The reliable route is:
+`swift-markdown` 0.9.0 (product **Markdown**, pulling in `swift-cmark` 0.9.0) is a dependency
+of the `mdbook` target, added through Xcode's Project editor → Package Dependencies tab (the
+"Add to Project" dropdown in File → Add Package Dependencies… came up empty). Pins live in
+`mdbook.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved`. For the record,
+Xcode wrote this to `project.xcproj` (still don't hand-edit it; use Xcode for package changes):
 
-1. In Xcode: File → Add Package Dependencies… → `https://github.com/swiftlang/swift-markdown.git`,
-   "Up to Next Major" from 0.9.0, add product **Markdown** to the `mdbook` target.
-2. Commit `project.xcproj` and the generated `Package.resolved` so the schema is on record.
-3. Then the migration below can proceed from Claude Code.
+```json
+"packages": [
+  { "kind": "remote", "repository": "https://github.com/swiftlang/swift-markdown.git",
+    "version": { "up-to-next-major-version": "0.9.0" } },
+],
+// inside the mdbook target:
+"package-product-members": [
+  { "package": "swift-markdown", "product-name": "Markdown",
+    "build-phase": { "build-phase": "frameworks" } },
+],
+```
 
 ### Migration plan
 

@@ -10,6 +10,15 @@
       "Base",
     ],
   },
+  "packages": [
+    {
+      "kind": "remote",
+      "repository": "https://github.com/swiftlang/swift-markdown.git",
+      "version": {
+        "up-to-next-major-version": "0.9.0",
+      },
+    },
+  ],
   "files": [
     {
       "kind": "folder",
@@ -48,6 +57,13 @@
         "compile-sources",
         "frameworks",
         "resources",
+      ],
+      "package-product-members": [
+        {
+          "package": "swift-markdown",
+          "product-name": "Markdown",
+          "build-phase": { "build-phase": "frameworks" },
+        },
       ],
       "build-settings": {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
