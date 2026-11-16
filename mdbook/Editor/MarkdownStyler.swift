@@ -10,8 +10,10 @@ import AppKit
 struct MarkdownStyler {
     let theme: EditorTheme
 
-    /// Extra space added to every table column so cell text doesn't touch the grid lines.
-    static let tableCellPadding: CGFloat = 14
+    /// Horizontal space added to every table column (split between the two sides of a cell).
+    static let tableCellPadding: CGFloat = 28
+    /// Vertical space above and below the text in each rendered table row.
+    static let tableRowPadding: CGFloat = 6
 
     /// Restyles the whole document. `activeRegion` is the paragraph containing the caret
     /// (widened to the whole table when the caret is inside one); markup there stays
@@ -82,13 +84,17 @@ struct MarkdownStyler {
         for table in spans.tables {
             // Rendered tables use the reading font; tables being edited use monospace so
             // the aligned source lines up.
-            let font = rendersAsGrid(table, activeRegion: activeRegion) ? theme.baseFont : theme.codeFont
+            let asGrid = rendersAsGrid(table, activeRegion: activeRegion)
+            let font = asGrid ? theme.baseFont : theme.codeFont
             for line in table.lines {
                 storage.addAttribute(.font, value: font, range: line)
                 if theme.mode == .wysiwyg {
                     let style = mutableParagraphStyle()
                     style.lineSpacing = 2
-                    style.paragraphSpacing = 0
+                    // Rendered rows get vertical padding; the collapsed delimiter row gets none.
+                    let padded = asGrid && line != table.delimiterLine
+                    style.paragraphSpacingBefore = padded ? Self.tableRowPadding : 0
+                    style.paragraphSpacing = padded ? Self.tableRowPadding : 0
                     storage.addAttribute(.paragraphStyle, value: style, range: line)
                 }
             }
