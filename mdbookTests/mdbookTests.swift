@@ -209,6 +209,16 @@ struct MarkdownHighlighterTests {
         #expect(spans.blockQuotes[0].marker == range(of: "> ", in: text))
     }
 
+    @Test("Block quotes record their depth, hideable markers and lazy lines")
+    func quoteDepth() {
+        let text = "> one\n> > two\nlazy\n\n> three"
+        let spans = MarkdownHighlighter.scan(text)
+        let ns = text as NSString
+        #expect(spans.blockQuotes.map(\.depth) == [1, 2, 2, 1])
+        #expect(spans.blockQuotes.map { ns.substring(with: $0.marker) } == ["> ", "> > ", "", "> "])
+        #expect(spans.markers.map(ns.substring(with:)).filter { $0.hasPrefix(">") } == ["> ", "> > ", "> "])
+    }
+
     @Test("Tables are recognised from their delimiter row")
     func tables() {
         let spans = MarkdownHighlighter.scan("| a | b |\n|---|---|\n| 1 | 2 |\n\nnot | table")

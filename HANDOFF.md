@@ -103,7 +103,13 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 - Dropping or pasting image files links them where they are if they're inside the
   document's folder, else copies them into `images/` beside the document; pasted image data
   is saved there as a PNG. Pasting a URL over selected text makes a link.
-- Editing helpers in `MarkdownTextView`: Return continues lists; Tab/Shift-Tab indent and
+- Block quotes (WYSIWYG): `>` runs are markers, hidden away from the caret; lines indent by
+  depth (`MarkdownStyler.quoteIndent` per level, first-line indent reduced by the shown
+  marker so text doesn't move) and carry `.markdownQuoteDepth` (terminator included). The
+  layout manager draws one bar per level per line fragment, using the depth at the
+  fragment's first visible character. Lazy lines inherit the depth above.
+- Editing helpers in `MarkdownTextView`: Return continues lists and block quotes (lists
+  inside quotes too; an empty `>` line ends the quote); Format ▸ Quote (⌘') toggles `> `; Tab/Shift-Tab indent and
   outdent list items (nesting by the sibling's marker width, renumbering ordered items);
   typing `](` or `#` in a link destination opens completion (chapter paths relative to the
   document, `#heading` slugs; the coordinator's `linkCompletions(for:)` supplies them).

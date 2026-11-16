@@ -28,7 +28,10 @@ nonisolated struct MarkdownSpans: Sendable {
 
     struct BlockQuote: Sendable {
         var line: NSRange
+        /// The `> > ` run (empty on a lazy continuation line).
         var marker: NSRange
+        /// Nesting level, 1 for `>`; a lazy line continues the level above it.
+        var depth: Int = 1
     }
 
     struct ListItem: Sendable {
@@ -405,14 +408,20 @@ private nonisolated struct SpanWalker: MarkupWalker {
         // Nested quotes share their outer quote's `> > ` marker run, so only the outermost
         // quote records lines.
         if quoteDepth == 0, let range = blockQuote.range, let lines = blockLines(blockQuote) {
+            var depth = 1
             for lineNumber in lines {
                 let line = map.lineRange(lineNumber)
                 let start = lineNumber == lines.lowerBound ? map.offset(range.lowerBound) : line.location
                 let searchRange = NSRange(location: start, length: NSMaxRange(line) - start)
-                let marker = Self.quoteMarkers.firstMatch(in: text, options: .anchored, range: searchRange)?.range(at: 1)
+                if let marker = Self.quoteMarkers.firstMatch(in: text, options: .anchored, range: searchRange)?.range(at: 1) {
+                    depth = max(1, (0..<marker.length).filter { ns.character(at: marker.location + $0) == 0x3E }.count) // >
+                    spans.blockQuotes.append(.init(line: line, marker: marker, depth: depth))
+                    // Hidden away from the caret; the editor draws a bar per level instead.
+                    addMarker(marker)
+                } else {
                     // A lazy continuation line has no marker of its own.
-                    ?? NSRange(location: start, length: 0)
-                spans.blockQuotes.append(.init(line: line, marker: marker))
+                    spans.blockQuotes.append(.init(line: line, marker: NSRange(location: start, length: 0), depth: depth))
+                }
             }
         }
         quoteDepth += 1

@@ -12,6 +12,8 @@ final class MarkdownLayoutManager: NSLayoutManager {
     var codeBlockBackground: NSColor = .quaternarySystemFill
     var tableHeaderBackground: NSColor = .quaternarySystemFill
     var gridColor: NSColor = .separatorColor
+    /// Gutter width per quote level (matches `MarkdownStyler.quoteIndent`).
+    var quoteIndent: CGFloat = 22
     var panelCornerRadius: CGFloat = 6
     /// How far a panel extends beyond the text on each side.
     var panelHorizontalPadding: CGFloat = 8
@@ -26,6 +28,8 @@ final class MarkdownLayoutManager: NSLayoutManager {
             let padding = textContainer.lineFragmentPadding
             return (origin.x + padding - panelHorizontalPadding, textContainer.size.width - padding * 2 + panelHorizontalPadding * 2)
         }
+
+        drawQuoteBars(in: characterRange, storage: textStorage, origin: origin)
 
         // Header rows of tables being edited hug the text.
         drawPanels(for: .markdownTableHeader, in: characterRange, storage: textStorage, color: tableHeaderBackground, origin: origin) { usedWidth in
@@ -131,6 +135,34 @@ final class MarkdownLayoutManager: NSLayoutManager {
         }
     }
 
+    // MARK: - Block quotes
+
+    /// Bars down the left of quote lines, one per nesting level. Drawn per line fragment,
+    /// using the depth at the fragment's first visible character, so bars join up across
+    /// lines and levels, and a fragment that only holds the next line's hidden `>` markers
+    /// (they join the line above) gets none.
+    private func drawQuoteBars(in characterRange: NSRange, storage: NSTextStorage, origin: NSPoint) {
+        guard let textContainer = textContainers.first, storage.length > 0 else { return }
+        let glyphs = glyphRange(forCharacterRange: characterRange, actualCharacterRange: nil)
+        // Opaque, so bars drawn in adjacent fragments don't darken where they meet.
+        let color = NSColor.controlAccentColor.blended(withFraction: 0.45, of: .textBackgroundColor) ?? .controlAccentColor
+        enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, fragmentGlyphs, _ in
+            let characters = self.characterRange(forGlyphRange: fragmentGlyphs, actualGlyphRange: nil)
+            var index = characters.location
+            while index < NSMaxRange(characters), index < storage.length,
+                  storage.attribute(.markdownHidden, at: index, effectiveRange: nil) != nil {
+                index += 1
+            }
+            guard index < min(NSMaxRange(characters), storage.length),
+                  let depth = storage.attribute(.markdownQuoteDepth, at: index, effectiveRange: nil) as? Int, depth > 0 else { return }
+            color.setFill()
+            for level in 0..<depth {
+                let x = origin.x + textContainer.lineFragmentPadding + CGFloat(level) * self.quoteIndent + 2
+                NSRect(x: x, y: origin.y + rect.minY, width: 3, height: rect.height).fill()
+            }
+        }
+    }
+
     // MARK: - Helpers
 
     /// Calls `body` once per maximal run of `attribute` that touches `characterRange`.
@@ -150,6 +182,8 @@ final class MarkdownLayoutManager: NSLayoutManager {
 extension NSAttributedString.Key {
     /// Present on every character of a fenced code block (including the fences).
     static let markdownCodeBlock = NSAttributedString.Key("mdbook.codeBlock")
+    /// The nesting depth (`Int`) of a block quote line, including its terminator.
+    static let markdownQuoteDepth = NSAttributedString.Key("mdbook.quoteDepth")
     /// Present on the header row of a table that is being edited as source.
     static let markdownTableHeader = NSAttributedString.Key("mdbook.tableHeader")
 }

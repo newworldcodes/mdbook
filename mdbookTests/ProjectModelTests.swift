@@ -248,6 +248,33 @@ struct EditorCoordinatorTests {
         #expect(textView.string.hasSuffix("- [x] done\n- [ ] "))
     }
 
+    @Test("Return continues block quotes, lists inside them, and ends on an empty line")
+    func quoteContinuation() {
+        let (_, textView) = MarkdownTextView.makeScrollable()
+        func returnAtEnd(_ text: String) -> String {
+            textView.string = text
+            textView.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+            textView.insertNewline(nil)
+            return textView.string
+        }
+        #expect(returnAtEnd("> quoted") == "> quoted\n> ")
+        #expect(returnAtEnd("> > deeper") == "> > deeper\n> > ")
+        #expect(returnAtEnd("> - item") == "> - item\n> - ")
+        #expect(returnAtEnd("> 1. one") == "> 1. one\n> 2. ")
+        #expect(returnAtEnd("> quoted\n> ") == "> quoted\n")
+    }
+
+    @Test("Format ▸ Quote quotes the selected lines, and unquotes them when all are quoted")
+    func toggleQuote() {
+        let (_, textView) = MarkdownTextView.makeScrollable()
+        textView.string = "one\n\ntwo\nafter"
+        textView.setSelectedRange(NSRange(location: 0, length: 6))
+        textView.toggleQuoteMarkdown(nil)
+        #expect(textView.string == "> one\n>\n> two\nafter")
+        textView.toggleQuoteMarkdown(nil)
+        #expect(textView.string == "one\n\ntwo\nafter")
+    }
+
     @Test("Align Table Columns pads the table at the caret")
     func formatTable() async throws {
         let text = "Intro\n\n| a | bb |\n|-|-|\n| ccc | d |\n"

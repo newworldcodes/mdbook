@@ -75,6 +75,8 @@ struct mdbookApp: App {
                     .keyboardShortcut("h", modifiers: [.command, .shift])
                 Button("Add Link") { send(#selector(MarkdownTextView.insertLinkMarkdown(_:))) }
                     .keyboardShortcut("k")
+                Button("Quote") { send(#selector(MarkdownTextView.toggleQuoteMarkdown(_:))) }
+                    .keyboardShortcut("'")
                 Divider()
                 Button("Insert Table") { send(#selector(MarkdownTextView.insertTableMarkdown(_:))) }
                     .keyboardShortcut("t", modifiers: [.command, .option])

@@ -148,6 +148,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             if let layoutManager = textView.layoutManager as? MarkdownLayoutManager {
                 layoutManager.codeBlockBackground = theme.codeBackground
                 layoutManager.tableHeaderBackground = theme.codeBackground
+                layoutManager.quoteIndent = MarkdownStyler(theme: theme).quoteIndent
             }
         }
 
@@ -439,6 +440,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         private func needsRestyleOnCaretChange(_ paragraph: NSRange, storage: NSTextStorage) -> Bool {
             activeRegion(for: paragraph) != paragraph
                 || hasBlockRendering(in: paragraph, storage: storage)
+                // A quote line's first-line indent depends on whether its `>` shows.
+                || spans.blockQuotes.contains { NSIntersectionRange($0.line, paragraph).length > 0 && $0.marker.length > 0 }
                 || spans.links.contains { $0.isImage && NSIntersectionRange($0.range, paragraph).length > 0 }
         }
 

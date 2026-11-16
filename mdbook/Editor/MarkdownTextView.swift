@@ -129,13 +129,34 @@ final class MarkdownTextView: NSTextView {
         }
         let selection = selectedRange()
         let ns = textStorage.string as NSString
-        let paragraph = ns.paragraphRange(for: NSRange(location: selection.location, length: 0))
+        var paragraph = ns.paragraphRange(for: NSRange(location: selection.location, length: 0))
         var line = ns.substring(with: paragraph)
         if line.hasSuffix("\n") { line.removeLast() }
+
+        // Inside a block quote, continue the quote (and any list inside it).
+        let quotePrefix = Self.quotePrefix(of: line)
+        let quoteLength = (quotePrefix as NSString).length
+        if quoteLength > 0 {
+            guard selection.location >= paragraph.location + quoteLength else {
+                super.insertNewline(sender)
+                return
+            }
+            line = String(line.dropFirst(quotePrefix.count))
+            paragraph = NSRange(location: paragraph.location + quoteLength, length: paragraph.length - quoteLength)
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                // Return on an empty quote line ends the quote.
+                insertText("", replacementRange: NSRange(location: paragraph.location - quoteLength, length: quoteLength + (line as NSString).length))
+                return
+            }
+        }
         let lineNS = line as NSString
 
         guard let match = pattern.firstMatch(in: line, range: NSRange(location: 0, length: lineNS.length)) else {
-            super.insertNewline(sender)
+            if quoteLength > 0 {
+                insertText("\n" + quotePrefix, replacementRange: selection)
+            } else {
+                super.insertNewline(sender)
+            }
             return
         }
         let prefixLength = NSMaxRange(match.range)
@@ -160,7 +181,50 @@ final class MarkdownTextView: NSTextView {
         }
         let spacing = lineNS.substring(with: match.range(at: 5))
         let task = match.range(at: 6).location == NSNotFound ? "" : "[ ] "
-        insertText("\n" + indent + marker + spacing + task, replacementRange: selection)
+        insertText("\n" + quotePrefix + indent + marker + spacing + task, replacementRange: selection)
+    }
+
+    /// The `> > ` run starting a block quote line, normalised to `> ` per level.
+    static func quotePrefix(of line: String) -> String {
+        var depth = 0
+        var rest = Substring(line)
+        while true {
+            let trimmed = rest.drop { $0 == " " || $0 == "\t" }
+            guard trimmed.first == ">" else { break }
+            depth += 1
+            rest = trimmed.dropFirst()
+            if rest.first == " " { rest = rest.dropFirst() }
+        }
+        guard depth > 0 else { return "" }
+        // Keep the line's own spelling so offsets stay right.
+        return String(line.prefix(line.count - rest.count))
+    }
+
+    /// Format ▸ Quote: quotes the selected lines, or unquotes them one level if they're all
+    /// quoted already.
+    @objc func toggleQuoteMarkdown(_ sender: Any?) {
+        let ns = string as NSString
+        let span = ns.lineRange(for: selectedRange())
+        var lines: [String] = []
+        ns.enumerateSubstrings(in: span, options: [.byLines]) { line, _, _, _ in lines.append(line ?? "") }
+        if lines.isEmpty { lines = [""] }
+        let content = lines.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let unquote = !content.isEmpty && content.allSatisfy { $0.drop { $0 == " " }.hasPrefix(">") }
+        let changed = lines.map { line -> String in
+            if unquote {
+                let leading = line.prefix { $0 == " " }
+                var rest = line.dropFirst(leading.count)
+                guard rest.hasPrefix(">") else { return line }
+                rest = rest.dropFirst()
+                if rest.hasPrefix(" ") { rest = rest.dropFirst() }
+                return String(leading) + rest
+            }
+            return line.isEmpty ? ">" : "> " + line
+        }
+        let hadTerminator = span.length > 0 && [0x0A, 0x0D].contains(ns.character(at: NSMaxRange(span) - 1))
+        let replacement = changed.joined(separator: "\n") + (hadTerminator ? "\n" : "")
+        insertText(replacement, replacementRange: span)
+        setSelectedRange(NSRange(location: span.location, length: (replacement as NSString).length - (hadTerminator ? 1 : 0)))
     }
 
     // MARK: - Link completion

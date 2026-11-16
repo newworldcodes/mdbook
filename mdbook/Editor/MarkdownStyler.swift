@@ -62,12 +62,6 @@ struct MarkdownStyler {
 
         for quote in spans.blockQuotes {
             storage.addAttribute(.foregroundColor, value: theme.quoteColor, range: quote.line)
-            if theme.mode == .wysiwyg {
-                let style = mutableParagraphStyle()
-                style.firstLineHeadIndent = 4
-                style.headIndent = 4 + width(of: quote.marker, in: storage)
-                storage.addAttribute(.paragraphStyle, value: style, range: quote.line)
-            }
             storage.addAttribute(.foregroundColor, value: theme.markerColor, range: quote.marker)
         }
 
@@ -87,6 +81,11 @@ struct MarkdownStyler {
                 style.paragraphSpacing = 2
                 storage.addAttribute(.paragraphStyle, value: style, range: item.line)
             }
+        }
+
+        // After list items: a list inside a quote keeps its own indents, shifted by the quote's.
+        if theme.mode == .wysiwyg {
+            styleQuoteIndents(spans: spans, storage: storage, activeRegion: activeRegion)
         }
 
         for table in spans.tables {
@@ -267,6 +266,34 @@ struct MarkdownStyler {
             range.length += 1
         }
         storage.addAttribute(.markdownBlockRendering, value: rendering, range: range)
+    }
+
+    // MARK: - Block quotes
+
+    /// Indent per quote level; the layout manager draws a bar in each level's gutter.
+    var quoteIndent: CGFloat { 22 * theme.scale }
+
+    /// Indents quote lines by their depth. Text starts at the same place whether the `>`
+    /// markers are hidden (caret elsewhere) or shown, which they then do in the indent.
+    private func styleQuoteIndents(spans: MarkdownSpans, storage: NSTextStorage, activeRegion: NSRange?) {
+        let ns = storage.string as NSString
+        for quote in spans.blockQuotes where NSMaxRange(quote.line) <= storage.length {
+            let indent = CGFloat(quote.depth) * quoteIndent
+            let shown = !theme.hidesMarkers || (activeRegion.map { intersects($0, quote.line) } ?? true)
+            let markerWidth = shown ? width(of: quote.marker, in: storage) : 0
+            let existing = storage.attribute(.paragraphStyle, at: quote.line.location, effectiveRange: nil) as? NSParagraphStyle
+            let isListItem = spans.listItems.contains { $0.line == quote.line }
+            let style = (isListItem ? existing?.mutableCopy() as? NSMutableParagraphStyle : nil) ?? mutableParagraphStyle()
+            let listFirst = isListItem ? style.firstLineHeadIndent : 0
+            let listHead = isListItem ? style.headIndent : 0
+            style.firstLineHeadIndent = max(0, indent - markerWidth) + listFirst
+            style.headIndent = indent + listHead
+            // Include the terminator so consecutive quote lines form one run (one bar).
+            var line = ns.paragraphRange(for: quote.line)
+            line.length = min(line.length, storage.length - line.location)
+            storage.addAttribute(.paragraphStyle, value: style, range: line)
+            storage.addAttribute(.markdownQuoteDepth, value: quote.depth, range: line)
+        }
     }
 
     // MARK: - Images
