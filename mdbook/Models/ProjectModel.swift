@@ -36,6 +36,7 @@ final class ProjectModel {
     private enum DefaultsKey {
         static let projectBookmark = "lastProjectBookmark"
         static let layout = "editorLayout"
+        static let recentProjects = "recentProjects"
     }
 
     // MARK: Project state
@@ -229,9 +230,59 @@ final class ProjectModel {
     private func persistBookmark(for url: URL) {
         if let data = try? url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil) {
             UserDefaults.standard.set(data, forKey: DefaultsKey.projectBookmark)
+            rememberRecentProject(url, bookmark: data)
         } else {
             UserDefaults.standard.removeObject(forKey: DefaultsKey.projectBookmark)
         }
+    }
+
+    // MARK: - Recent projects
+
+    struct RecentProject: Codable, Identifiable, Equatable {
+        var name: String
+        var path: String
+        var bookmark: Data
+        var id: String { path }
+    }
+
+    /// Folders and files opened before, newest first (File ▸ Open Recent).
+    private(set) var recentProjects: [RecentProject] = {
+        guard let data = UserDefaults.standard.data(forKey: DefaultsKey.recentProjects) else { return [] }
+        return (try? JSONDecoder().decode([RecentProject].self, from: data)) ?? []
+    }()
+
+    private func rememberRecentProject(_ url: URL, bookmark: Data) {
+        let entry = RecentProject(name: url.lastPathComponent, path: url.path, bookmark: bookmark)
+        recentProjects = Array(([entry] + recentProjects.filter { $0.path != entry.path }).prefix(10))
+        saveRecentProjects()
+    }
+
+    private func saveRecentProjects() {
+        if let data = try? JSONEncoder().encode(recentProjects) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.recentProjects)
+        }
+    }
+
+    func openRecentProject(_ project: RecentProject) {
+        var isStale = false
+        var isDirectory: ObjCBool = false
+        guard let url = try? URL(resolvingBookmarkData: project.bookmark, options: [.withSecurityScope], relativeTo: nil, bookmarkDataIsStale: &isStale),
+              FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            recentProjects.removeAll { $0.path == project.path }
+            saveRecentProjects()
+            errorMessage = "\u{201C}\(project.name)\u{201D} can't be found. It may have been moved or deleted."
+            return
+        }
+        if isDirectory.boolValue {
+            openProject(at: url)
+        } else {
+            openFile(at: url)
+        }
+    }
+
+    func clearRecentProjects() {
+        recentProjects = []
+        saveRecentProjects()
     }
 
     private func preferredEntryFile() -> URL? {
@@ -711,6 +762,20 @@ final class ProjectModel {
         let level: Int
         let title: String
     }
+
+    @ObservationIgnored private var statisticsCache: (text: String, words: Int)?
+
+    /// Words in the open document (markdown syntax isn't counted as words).
+    var wordCount: Int {
+        if let statisticsCache, statisticsCache.text == text { return statisticsCache.words }
+        var words = 0
+        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
+        statisticsCache = (text, words)
+        return words
+    }
+
+    /// Reading time in minutes at 230 words a minute, at least one.
+    var readingMinutes: Int { max(1, Int((Double(wordCount) / 230).rounded())) }
 
     @ObservationIgnored private var outlineCache: (text: String, entries: [OutlineEntry])?
 

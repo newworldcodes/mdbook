@@ -15,18 +15,29 @@ struct EditorTheme: Equatable {
     }
 
     let mode: Mode
+    /// Text size multiplier (zoom); 1 is 16 pt body text in the WYSIWYG editor.
+    var scale: CGFloat = 1
+    /// The reading typeface for the WYSIWYG editor (source mode is always monospaced).
+    var font: ReadingFont = .system
 
     var hidesMarkers: Bool { mode == .wysiwyg }
 
+    /// A system font at `size` (before scaling) in the chosen design.
+    private func readingFont(ofSize size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size * scale, weight: weight)
+        guard let descriptor = base.fontDescriptor.withDesign(font.systemDesign) else { return base }
+        return NSFont(descriptor: descriptor, size: size * scale) ?? base
+    }
+
     var baseFont: NSFont {
         switch mode {
-        case .wysiwyg: return NSFont.systemFont(ofSize: 16)
-        case .source: return NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        case .wysiwyg: return readingFont(ofSize: 16)
+        case .source: return NSFont.monospacedSystemFont(ofSize: 13 * scale, weight: .regular)
         }
     }
 
     var codeFont: NSFont {
-        NSFont.monospacedSystemFont(ofSize: mode == .wysiwyg ? 14 : 13, weight: .regular)
+        NSFont.monospacedSystemFont(ofSize: (mode == .wysiwyg ? 14 : 13) * scale, weight: .regular)
     }
 
     var textColor: NSColor { .textColor }
@@ -59,9 +70,9 @@ struct EditorTheme: Equatable {
         case .wysiwyg:
             let sizes: [CGFloat] = [30, 24, 20, 18, 16, 16]
             let size = sizes[max(0, min(level - 1, sizes.count - 1))]
-            return NSFont.systemFont(ofSize: size, weight: level <= 2 ? .bold : .semibold)
+            return readingFont(ofSize: size, weight: level <= 2 ? .bold : .semibold)
         case .source:
-            return NSFont.monospacedSystemFont(ofSize: 13, weight: .bold)
+            return NSFont.monospacedSystemFont(ofSize: 13 * scale, weight: .bold)
         }
     }
 

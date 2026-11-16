@@ -11,11 +11,13 @@ struct mdbookApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
 
     private var model: ProjectModel { appDelegate.model }
+    private var settings: AppSettings { appDelegate.settings }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(model)
+                .environment(settings)
                 .frame(minWidth: 700, minHeight: 400)
         }
         .commands {
@@ -25,6 +27,14 @@ struct mdbookApp: App {
                     .disabled(model.rootURL == nil)
                 Button("Open Folder…") { model.openFolderPanel() }
                     .keyboardShortcut("o")
+                Menu("Open Recent") {
+                    ForEach(model.recentProjects) { project in
+                        Button(project.name) { model.openRecentProject(project) }
+                    }
+                    Divider()
+                    Button("Clear Menu") { model.clearRecentProjects() }
+                }
+                .disabled(model.recentProjects.isEmpty)
             }
 
             CommandGroup(replacing: .saveItem) {
@@ -79,6 +89,19 @@ struct mdbookApp: App {
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
                 }
                 Divider()
+                Button("Zoom In") { settings.zoomIn() }
+                    .keyboardShortcut("+")
+                    .disabled(!settings.canZoomIn)
+                Button("Zoom Out") { settings.zoomOut() }
+                    .keyboardShortcut("-")
+                    .disabled(!settings.canZoomOut)
+                Button("Actual Size") { settings.resetZoom() }
+                    .keyboardShortcut("0")
+                    .disabled(settings.textSize == AppSettings.defaultTextSize)
+                Divider()
+                Toggle("Focus Mode", isOn: Binding(get: { settings.focusMode }, set: { settings.focusMode = $0 }))
+                Toggle("Typewriter Mode", isOn: Binding(get: { settings.typewriterMode }, set: { settings.typewriterMode = $0 }))
+                Divider()
             }
 
             CommandGroup(after: .pasteboard) {
@@ -112,6 +135,10 @@ struct mdbookApp: App {
                 }
                 .disabled(model.selection == nil)
             }
+        }
+
+        Settings {
+            SettingsView(settings: settings)
         }
     }
 

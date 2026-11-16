@@ -17,6 +17,13 @@ struct MarkdownEditorView: NSViewRepresentable {
     var documentURL: URL? = nil
     /// The project's markdown files, offered when typing a link destination.
     var projectFiles: [URL] = []
+    /// Text size multiplier and typeface (from Settings / View ▸ Zoom).
+    var textScale: CGFloat = 1
+    var readingFont: ReadingFont = .system
+    /// Dim everything but the paragraph being edited.
+    var focusMode = false
+    /// Keep the line being edited in the middle of the view.
+    var typewriterMode = false
     /// Scroll to the heading matching this anchor whenever a new request arrives.
     var anchorRequest: AnchorRequest? = nil
     /// Select and scroll to this range whenever a new request arrives.
@@ -61,8 +68,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.documentURL = documentURL
 
         var needsRestyle = false
-        if coordinator.theme.mode != mode {
-            coordinator.theme = EditorTheme(mode: mode)
+        let theme = EditorTheme(mode: mode, scale: textScale, font: readingFont)
+        if coordinator.theme != theme {
+            coordinator.theme = theme
             coordinator.configure(textView)
             needsRestyle = true
         }
@@ -83,6 +91,8 @@ struct MarkdownEditorView: NSViewRepresentable {
         if let request = revealRequest, coordinator.handledRevealID != request.id {
             coordinator.reveal(request)
         }
+        coordinator.applyFocus()
+        coordinator.updateTypewriterInsets()
     }
 
     // MARK: - Coordinator
@@ -105,7 +115,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         init(parent: MarkdownEditorView) {
             self.parent = parent
-            self.theme = EditorTheme(mode: parent.mode)
+            self.theme = EditorTheme(mode: parent.mode, scale: parent.textScale, font: parent.readingFont)
         }
 
         deinit {
@@ -245,6 +255,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             )
             invalidateGlyphs(in: NSRange(location: 0, length: storage.length), textView: textView)
             textView.typingAttributes = theme.baseAttributes
+            applyFocus()
         }
 
         /// The width a rendered table or image may use: the text container minus its padding.
@@ -298,6 +309,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             styler.setMarkersVisible(true, in: newRange, storage: storage)
             invalidateGlyphs(in: newRange, textView: textView)
             activeParagraph = newRange
+            applyFocus()
         }
 
         private func hasBlockRendering(in range: NSRange, storage: NSTextStorage) -> Bool {
@@ -310,6 +322,61 @@ struct MarkdownEditorView: NSViewRepresentable {
                 }
             }
             return found
+        }
+
+        // MARK: Focus and typewriter modes
+
+        /// Dims everything outside the caret's paragraph (or table) with temporary
+        /// attributes, which leave the text storage alone.
+        func applyFocus() {
+            guard let textView, let layoutManager = textView.layoutManager, let storage = textView.textStorage else { return }
+            let full = NSRange(location: 0, length: storage.length)
+            layoutManager.removeTemporaryAttribute(.foregroundColor, forCharacterRange: full)
+            guard parent.focusMode, theme.mode == .wysiwyg, full.length > 0 else { return }
+            let active = activeRegion(for: paragraphRange(for: textView))
+            let dimmed = NSColor.tertiaryLabelColor
+            if active.location > 0 {
+                layoutManager.addTemporaryAttribute(.foregroundColor, value: dimmed, forCharacterRange: NSRange(location: 0, length: active.location))
+            }
+            if NSMaxRange(active) < full.length {
+                layoutManager.addTemporaryAttribute(.foregroundColor, value: dimmed, forCharacterRange: NSRange(location: NSMaxRange(active), length: full.length - NSMaxRange(active)))
+            }
+        }
+
+        /// In typewriter mode, room below the text so the last lines can reach the middle.
+        func updateTypewriterInsets() {
+            guard let scrollView = textView?.enclosingScrollView else { return }
+            let bottom = parent.typewriterMode ? scrollView.contentView.bounds.height / 2 : 0
+            guard scrollView.contentInsets.bottom != bottom else { return }
+            scrollView.automaticallyAdjustsContentInsets = !parent.typewriterMode
+            var insets = scrollView.contentInsets
+            insets.bottom = bottom
+            scrollView.contentInsets = insets
+        }
+
+        /// Scrolls so the caret's line sits in the middle of the view.
+        func centerCaret() {
+            guard parent.typewriterMode, let textView, let layoutManager = textView.layoutManager,
+                  let scrollView = textView.enclosingScrollView, textView.window != nil else { return }
+            let length = (textView.string as NSString).length
+            let location = min(textView.selectedRange().location, length)
+            // Layout is non-contiguous: positions below unlaid-out text are only estimates.
+            layoutManager.ensureLayout(forCharacterRange: NSRange(location: 0, length: min(location + 1, length)))
+            var rect: NSRect
+            if location >= length, !layoutManager.extraLineFragmentRect.isEmpty {
+                rect = layoutManager.extraLineFragmentRect
+            } else if layoutManager.numberOfGlyphs > 0 {
+                let glyph = min(layoutManager.glyphIndexForCharacter(at: location), layoutManager.numberOfGlyphs - 1)
+                rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            } else {
+                return
+            }
+            rect.origin.y += textView.textContainerOrigin.y
+            let clip = scrollView.contentView
+            let target = rect.midY - clip.bounds.height / 2
+            let minimum = -scrollView.contentInsets.top
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: max(minimum, target)))
+            scrollView.reflectScrolledClipView(clip)
         }
 
         // MARK: Link completion
@@ -425,6 +492,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             typing[.foregroundColor] = theme.textColor
             textView.typingAttributes = typing
             updateActiveParagraph()
+            centerCaret()
         }
 
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {

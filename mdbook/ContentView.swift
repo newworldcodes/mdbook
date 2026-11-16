@@ -7,6 +7,7 @@ import SwiftUI
 
 struct ContentView: View {
     @Environment(ProjectModel.self) private var model
+    @Environment(AppSettings.self) private var settings
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @FocusState private var isSearchFocused: Bool
 
@@ -17,6 +18,8 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
         } detail: {
             DocumentAreaView(model: model)
+                .environment(\.markdownTextScale, settings.scale)
+                .environment(\.markdownFontDesign, settings.font.fontDesign)
         }
         .searchable(text: $model.searchQuery, placement: .sidebar, prompt: "Search Project")
         .searchFocused($isSearchFocused)
@@ -90,6 +93,16 @@ struct ContentView: View {
                     }
                     .disabled(model.outline.isEmpty)
                     .help("Jump to a heading in this document")
+                }
+            }
+
+            ToolbarItem(placement: .automatic) {
+                if model.selection != nil {
+                    Text("\(model.wordCount.formatted()) words · \(model.readingMinutes) min")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .help("Word count and reading time for this chapter")
                 }
             }
 
@@ -207,6 +220,7 @@ struct ProjectAlerts: ViewModifier {
 /// The detail column: WYSIWYG editor or source + preview split.
 struct DocumentAreaView: View {
     @Bindable var model: ProjectModel
+    @Environment(AppSettings.self) private var settings
     @State private var sourceScrollFraction: Double?
 
     var body: some View {
@@ -220,6 +234,10 @@ struct DocumentAreaView: View {
                         onOpenLink: model.open(linkDestination:),
                         documentURL: selection,
                         projectFiles: model.treeFiles,
+                        textScale: settings.scale,
+                        readingFont: settings.font,
+                        focusMode: settings.focusMode,
+                        typewriterMode: settings.typewriterMode,
                         anchorRequest: model.pendingAnchor,
                         revealRequest: model.pendingReveal
                     )
@@ -231,6 +249,8 @@ struct DocumentAreaView: View {
                             onOpenLink: model.open(linkDestination:),
                             documentURL: selection,
                             projectFiles: model.treeFiles,
+                            textScale: settings.scale,
+                            typewriterMode: settings.typewriterMode,
                             anchorRequest: model.pendingAnchor,
                             revealRequest: model.pendingReveal,
                             onScroll: { sourceScrollFraction = $0 }
@@ -276,4 +296,5 @@ struct DocumentAreaView: View {
 #Preview {
     ContentView()
         .environment(ProjectModel())
+        .environment(AppSettings())
 }

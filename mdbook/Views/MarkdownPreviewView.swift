@@ -114,6 +114,8 @@ struct ChapterFooter: View {
     let previous: ChapterLink?
     let next: ChapterLink?
     let open: (URL) -> Void
+    @Environment(\.markdownTextScale) private var scale
+    @Environment(\.markdownFontDesign) private var design
 
     var body: some View {
         VStack(spacing: 12) {
@@ -140,7 +142,7 @@ struct ChapterFooter: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text(chapter.title)
-                    .font(.system(size: 15, weight: .medium))
+                    .font(.system(size: 15 * scale, weight: .medium, design: design))
                     .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
             }
             .padding(10)
@@ -155,6 +157,7 @@ struct ChapterFooter: View {
 struct MarkdownBlockView: View {
     let block: MarkdownBlock
     let documentURL: URL?
+    @Environment(\.markdownTextScale) private var scale
 
     var body: some View {
         switch block {
@@ -180,7 +183,7 @@ struct MarkdownBlockView: View {
             Divider().padding(.vertical, 4)
         case .math(let text):
             Text(text)
-                .font(.system(size: 18, design: .serif).italic())
+                .font(.system(size: 18 * scale, design: .serif).italic())
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
                 .textSelection(.enabled)
@@ -204,20 +207,20 @@ struct MarkdownBlockListView: View {
 struct MarkdownHeadingView: View {
     let level: Int
     let content: AttributedString
+    @Environment(\.markdownTextScale) private var scale
+    @Environment(\.markdownFontDesign) private var design
+
+    private var size: CGFloat {
+        [30, 24, 20, 18, 16, 16][max(0, min(level - 1, 5))] * scale
+    }
 
     private var font: Font {
-        switch level {
-        case 1: return .system(size: 30, weight: .bold)
-        case 2: return .system(size: 24, weight: .bold)
-        case 3: return .system(size: 20, weight: .semibold)
-        case 4: return .system(size: 18, weight: .semibold)
-        default: return .system(size: 16, weight: .semibold)
-        }
+        .system(size: size, weight: level <= 2 ? .bold : .semibold, design: design)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(MarkdownInlineStyle.styled(content, baseSize: level == 1 ? 30 : 20))
+            Text(MarkdownInlineStyle.styled(content, baseSize: size))
                 .font(font)
                 .padding(.top, level <= 2 ? 8 : 4)
             if level <= 2 { Divider() }
@@ -228,6 +231,8 @@ struct MarkdownHeadingView: View {
 struct MarkdownParagraphView: View {
     let segments: [MarkdownInlineSegment]
     let documentURL: URL?
+    @Environment(\.markdownTextScale) private var scale
+    @Environment(\.markdownFontDesign) private var design
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -235,9 +240,9 @@ struct MarkdownParagraphView: View {
                 switch segment {
                 case .text(let text):
                     if !text.characters.isEmpty {
-                        Text(MarkdownInlineStyle.styled(text, baseSize: 16))
-                            .font(.system(size: 16))
-                            .lineSpacing(4)
+                        Text(MarkdownInlineStyle.styled(text, baseSize: 16 * scale))
+                            .font(.system(size: 16 * scale, design: design))
+                            .lineSpacing(4 * scale)
                     }
                 case .image(let source, let alt):
                     MarkdownImageView(source: source, alt: alt, documentURL: documentURL)
@@ -251,6 +256,7 @@ struct MarkdownParagraphView: View {
 struct MarkdownCodeBlockView: View {
     let language: String?
     let code: String
+    @Environment(\.markdownTextScale) private var scale
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -263,7 +269,7 @@ struct MarkdownCodeBlockView: View {
             }
             ScrollView(.horizontal) {
                 Text(highlighted)
-                    .font(.system(size: 13.5, design: .monospaced))
+                    .font(.system(size: 13.5 * scale, design: .monospaced))
                     .padding(12)
             }
         }
@@ -322,8 +328,10 @@ struct MarkdownListView: View {
 
 struct MarkdownTableView: View {
     let table: MarkdownTable
+    @Environment(\.markdownTextScale) private var scale
+    @Environment(\.markdownFontDesign) private var design
 
-    private static let fontSize: CGFloat = 15
+    private var fontSize: CGFloat { 15 * scale }
     private static let horizontalPadding: CGFloat = 10
 
     var body: some View {
@@ -352,15 +360,15 @@ struct MarkdownTableView: View {
 
     private func cellView(_ cell: AttributedString, column: Int, isHeader: Bool) -> some View {
         let alignment = column < table.alignments.count ? table.alignments[column] : .left
-        return Text(MarkdownInlineStyle.styled(cell, baseSize: Self.fontSize))
-            .font(.system(size: Self.fontSize))
+        return Text(MarkdownInlineStyle.styled(cell, baseSize: fontSize))
+            .font(.system(size: fontSize, design: design))
             .fontWeight(isHeader ? .semibold : nil)
             .multilineTextAlignment(alignment.textAlignment)
             .padding(.horizontal, Self.horizontalPadding)
             .padding(.vertical, 6)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment.topFrameAlignment)
             .background(isHeader ? Color(nsColor: .quaternarySystemFill) : .clear)
-            .layoutValue(key: TableCellMinimumWidth.self, value: MarkdownInlineStyle.longestWordWidth(cell, baseSize: Self.fontSize, bold: isHeader))
+            .layoutValue(key: TableCellMinimumWidth.self, value: MarkdownInlineStyle.longestWordWidth(cell, baseSize: fontSize, bold: isHeader))
     }
 }
 

@@ -10,6 +10,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = ProjectModel()
+    let settings = AppSettings()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `mdbook /path/to/book` from a terminal or an Xcode scheme argument.

@@ -621,6 +621,31 @@ struct LinkCompletionTests {
     }
 }
 
+@MainActor
+@Suite("Settings and statistics")
+struct SettingsTests {
+    @Test("Zoom stays within its range and resets to 16 pt")
+    func zoom() {
+        let settings = AppSettings()
+        let saved = settings.textSize
+        defer { settings.textSize = saved }
+        settings.textSize = AppSettings.textSizes.upperBound
+        settings.zoomIn()
+        #expect(settings.textSize == AppSettings.textSizes.upperBound)
+        settings.resetZoom()
+        #expect(settings.scale == 1)
+        #expect(EditorTheme(mode: .wysiwyg, scale: 1.5, font: .serif).baseFont.pointSize == 24)
+    }
+
+    @Test("Word count ignores markdown syntax")
+    func words() {
+        let model = ProjectModel()
+        model.updateText("# Title\n\nSome **bold** words, and `code`.")
+        #expect(model.wordCount == 6)
+        #expect(model.readingMinutes == 1)
+    }
+}
+
 @Suite("Text files")
 struct TextFileTests {
     @Test("Legacy encodings are detected and kept when saving")
