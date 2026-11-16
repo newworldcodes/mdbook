@@ -38,6 +38,7 @@ struct MarkdownStyler {
             for fence in block.fenceLines {
                 storage.addAttribute(.foregroundColor, value: theme.markerColor, range: fence)
             }
+            highlightCode(in: block, storage: storage)
         }
 
         for heading in spans.headings {
@@ -163,6 +164,28 @@ struct MarkdownStyler {
         guard theme.mode == .wysiwyg else { return false }
         guard let activeRegion else { return false }
         return !intersects(activeRegion, table.range)
+    }
+
+    // MARK: - Code blocks
+
+    /// Colours the tokens of a fenced code block according to its info string.
+    private func highlightCode(in block: MarkdownSpans.CodeBlock, storage: NSTextStorage) {
+        guard let openingFence = block.fenceLines.first else { return }
+        let ns = storage.string as NSString
+        let contentStart = min(NSMaxRange(openingFence) + 1, NSMaxRange(block.range))
+        let contentEnd = block.fenceLines.count > 1 ? block.fenceLines[1].location : NSMaxRange(block.range)
+        guard contentEnd > contentStart, contentEnd <= storage.length else { return }
+
+        let fenceText = ns.substring(with: openingFence)
+        let language = fenceText.drop(while: { $0 == " " || $0 == "\t" || $0 == "`" || $0 == "~" })
+            .prefix(while: { !$0.isWhitespace })
+        let contentRange = NSRange(location: contentStart, length: contentEnd - contentStart)
+        let code = ns.substring(with: contentRange)
+        for token in CodeHighlighter.tokens(in: code, language: String(language)) {
+            let range = NSRange(location: contentStart + token.range.location, length: token.range.length)
+            guard NSMaxRange(range) <= contentEnd else { continue }
+            storage.addAttribute(.foregroundColor, value: EditorTheme.color(for: token.kind), range: range)
+        }
     }
 
     // MARK: - Tables

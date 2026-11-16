@@ -36,6 +36,20 @@ struct EditorTheme: Equatable {
     var codeBackground: NSColor { .quaternarySystemFill }
     var linkColor: NSColor { .linkColor }
 
+    /// Colours for syntax-highlighted code, shared by the editor and the preview.
+    static func color(for kind: CodeToken.Kind) -> NSColor {
+        switch kind {
+        case .keyword: return .systemPink
+        case .string: return .systemRed
+        case .comment: return .secondaryLabelColor
+        case .number: return .systemOrange
+        case .type: return .systemTeal
+        case .attribute: return .systemPurple
+        case .tag: return .systemBlue
+        case .property: return .systemIndigo
+        }
+    }
+
     var textContainerInset: NSSize {
         mode == .wysiwyg ? NSSize(width: 28, height: 24) : NSSize(width: 12, height: 12)
     }

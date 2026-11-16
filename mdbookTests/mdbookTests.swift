@@ -262,6 +262,69 @@ struct TableSpanTests {
     }
 }
 
+// MARK: - Code highlighting
+
+@Suite("Code highlighter")
+struct CodeHighlighterTests {
+    private func kinds(_ code: String, language: String?) -> [(CodeToken.Kind, String)] {
+        let ns = code as NSString
+        return CodeHighlighter.tokens(in: code, language: language).map { ($0.kind, ns.substring(with: $0.range)) }
+    }
+
+    @Test("Swift keywords, strings, comments, numbers, types and attributes")
+    func swift() {
+        let code = "// note\n@MainActor func go(_ n: Int) -> String { return \"hi \\\"there\\\"\" + String(42) }"
+        let tokens = kinds(code, language: "swift")
+        #expect(tokens.contains { $0 == (.comment, "// note") })
+        #expect(tokens.contains { $0 == (.attribute, "@MainActor") })
+        #expect(tokens.contains { $0 == (.keyword, "func") })
+        #expect(tokens.contains { $0 == (.type, "Int") })
+        #expect(tokens.contains { $0 == (.string, "\"hi \\\"there\\\"\"") })
+        #expect(tokens.contains { $0 == (.number, "42") })
+    }
+
+    @Test("Block comments and template strings span lines")
+    func multiline() {
+        let tokens = kinds("/* a\nb */ const s = `x\ny`;", language: "js")
+        #expect(tokens.first?.0 == .comment)
+        #expect(tokens.first?.1 == "/* a\nb */")
+        #expect(tokens.contains { $0 == (.string, "`x\ny`") })
+    }
+
+    @Test("Python uses hash comments and highlights decorators")
+    func python() {
+        let tokens = kinds("@dataclass\nclass Foo:  # comment\n    x = 1.5", language: "python")
+        #expect(tokens.contains { $0 == (.attribute, "@dataclass") })
+        #expect(tokens.contains { $0 == (.keyword, "class") })
+        #expect(tokens.contains { $0 == (.comment, "# comment") })
+        #expect(tokens.contains { $0 == (.number, "1.5") })
+    }
+
+    @Test("YAML and JSON keys are properties")
+    func keys() {
+        #expect(kinds("name: mdbook\nversion: 2", language: "yaml").contains { $0 == (.property, "name") })
+        #expect(kinds("{\"key\": \"value\"}", language: "json").contains { $0 == (.property, "\"key\"") })
+        #expect(kinds("{\"key\": \"value\"}", language: "json").contains { $0 == (.string, "\"value\"") })
+    }
+
+    @Test("Markup highlights tags, attributes and values")
+    func html() {
+        let tokens = kinds("<a href=\"x\">hi</a><!-- c -->", language: "html")
+        #expect(tokens.contains { $0 == (.tag, "<a") })
+        #expect(tokens.contains { $0 == (.attribute, "href") })
+        #expect(tokens.contains { $0 == (.string, "\"x\"") })
+        #expect(tokens.contains { $0 == (.tag, "</a") })
+        #expect(tokens.contains { $0 == (.comment, "<!-- c -->") })
+    }
+
+    @Test("Unknown languages get generic highlighting")
+    func generic() {
+        let tokens = kinds("fn main { println(\"hello\") }", language: nil)
+        #expect(tokens.contains { $0 == (.keyword, "fn") })
+        #expect(tokens.contains { $0 == (.string, "\"hello\"") })
+    }
+}
+
 // MARK: - Heading anchors
 
 @Suite("Heading slugs")

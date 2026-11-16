@@ -205,13 +205,27 @@ struct MarkdownCodeBlockView: View {
                     .padding(.top, 8)
             }
             ScrollView(.horizontal) {
-                Text(code)
+                Text(highlighted)
                     .font(.system(size: 13.5, design: .monospaced))
                     .padding(12)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// The code with syntax colours applied as attributes.
+    private var highlighted: AttributedString {
+        var result = AttributedString(code)
+        let ns = code as NSString
+        for token in CodeHighlighter.tokens(in: code, language: language) {
+            guard NSMaxRange(token.range) <= ns.length,
+                  let start = AttributedString.Index(String.Index(utf16Offset: token.range.location, in: code), within: result),
+                  let end = AttributedString.Index(String.Index(utf16Offset: NSMaxRange(token.range), in: code), within: result),
+                  start < end else { continue }
+            result[start..<end].foregroundColor = Color(nsColor: EditorTheme.color(for: token.kind))
+        }
+        return result
     }
 }
 
