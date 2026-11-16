@@ -17,6 +17,8 @@ struct MarkdownEditorView: NSViewRepresentable {
     var documentURL: URL? = nil
     /// Scroll to the heading matching this anchor whenever a new request arrives.
     var anchorRequest: AnchorRequest? = nil
+    /// Select and scroll to this range whenever a new request arrives.
+    var revealRequest: RevealRequest? = nil
     /// Reports the vertical scroll position as a 0...1 fraction (used for split-pane sync).
     var onScroll: ((Double) -> Void)? = nil
 
@@ -39,7 +41,9 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         DispatchQueue.main.async {
             textView.window?.makeFirstResponder(textView)
-            if let request = anchorRequest, coordinator.handledAnchorID != request.id {
+            if let request = revealRequest, coordinator.handledRevealID != request.id {
+                coordinator.reveal(request)
+            } else if let request = anchorRequest, coordinator.handledAnchorID != request.id {
                 coordinator.reveal(anchor: request)
             } else {
                 textView.scroll(.zero)
@@ -74,6 +78,9 @@ struct MarkdownEditorView: NSViewRepresentable {
         if let request = anchorRequest, coordinator.handledAnchorID != request.id {
             coordinator.reveal(anchor: request)
         }
+        if let request = revealRequest, coordinator.handledRevealID != request.id {
+            coordinator.reveal(request)
+        }
     }
 
     // MARK: - Coordinator
@@ -84,6 +91,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         var theme: EditorTheme
         var isPushingChange = false
         var handledAnchorID: UUID?
+        var handledRevealID: UUID?
         private var activeParagraph: NSRange?
         private var spans = MarkdownSpans()
         private var scrollObserver: NSObjectProtocol?
@@ -203,6 +211,18 @@ struct MarkdownEditorView: NSViewRepresentable {
             }
             textView.setSelectedRange(NSRange(location: heading.line.location, length: 0))
             textView.scrollToTop(of: heading.line)
+        }
+
+        /// Selects a range (a search match), scrolls it into view and flashes it.
+        func reveal(_ request: RevealRequest) {
+            handledRevealID = request.id
+            guard let textView, NSMaxRange(request.range) <= (textView.string as NSString).length else { return }
+            textView.window?.makeFirstResponder(textView)
+            // Selecting may restyle (e.g. a rendered table switches to source), so lay out first.
+            textView.setSelectedRange(request.range)
+            textView.layoutManager?.ensureLayout(forCharacterRange: request.range)
+            textView.scrollRangeToVisible(request.range)
+            textView.showFindIndicator(for: request.range)
         }
 
         // MARK: Styling

@@ -8,6 +8,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(ProjectModel.self) private var model
     @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         @Bindable var model = model
@@ -16,6 +17,12 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 180, ideal: 240, max: 400)
         } detail: {
             DocumentAreaView(model: model)
+        }
+        .searchable(text: $model.searchQuery, placement: .sidebar, prompt: "Search Project")
+        .searchFocused($isSearchFocused)
+        .onChange(of: model.searchFocusRequest) { _, _ in
+            columnVisibility = .all
+            isSearchFocused = true
         }
         .navigationTitle(model.selectedFileName ?? model.projectName ?? "mdbook")
         .navigationSubtitle(model.selectedFileName == nil ? "" : (model.projectName ?? ""))
@@ -183,7 +190,8 @@ struct DocumentAreaView: View {
                         mode: .wysiwyg,
                         onOpenLink: model.open(linkDestination:),
                         documentURL: selection,
-                        anchorRequest: model.pendingAnchor
+                        anchorRequest: model.pendingAnchor,
+                        revealRequest: model.pendingReveal
                     )
                 case .split:
                     HSplitView {
@@ -193,6 +201,7 @@ struct DocumentAreaView: View {
                             onOpenLink: model.open(linkDestination:),
                             documentURL: selection,
                             anchorRequest: model.pendingAnchor,
+                            revealRequest: model.pendingReveal,
                             onScroll: { sourceScrollFraction = $0 }
                         )
                         .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)

@@ -85,6 +85,19 @@ final class ProjectModel {
 
     /// The heading the editor and preview should scroll to (from a `#anchor` link).
     private(set) var pendingAnchor: AnchorRequest?
+    /// A range to select in the editor once the file is open (from a search result).
+    private(set) var pendingReveal: RevealRequest?
+
+    // MARK: Search
+
+    var searchQuery = "" {
+        didSet { if searchQuery != oldValue { scheduleSearch() } }
+    }
+    private(set) var searchResults: [ProjectSearch.FileResult] = []
+    private(set) var isSearching = false
+    /// Bumped by Find in Project; the window focuses its search field when it changes.
+    private(set) var searchFocusRequest = 0
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
 
     private var watcher: FolderWatcher?
 
@@ -293,6 +306,47 @@ final class ProjectModel {
 
     func goToNextChapter() {
         if let nextChapter { navigate(to: nextChapter.url) }
+    }
+
+    // MARK: - Search
+
+    func requestSearchFocus() {
+        searchFocusRequest += 1
+    }
+
+    /// Reading order first, then any files the summary doesn't list.
+    private var searchFiles: [URL] {
+        let order = readingOrder
+        let listed = Set(order)
+        return order + treeFiles.filter { !listed.contains($0) }
+    }
+
+    private func scheduleSearch() {
+        searchTask?.cancel()
+        let query = searchQuery
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        // The open file is searched as edited, not as last saved.
+        let files = searchFiles.map { (url: $0, text: $0 == selection ? text : nil) }
+        searchTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            let results = await Task.detached(priority: .userInitiated) {
+                ProjectSearch.search(query, in: files)
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.searchResults = results
+            self.isSearching = false
+        }
+    }
+
+    func openSearchResult(_ url: URL, match: ProjectSearch.Match) {
+        navigate(to: url)
+        pendingReveal = RevealRequest(range: match.range)
     }
 
     // MARK: - Loading and saving
@@ -571,6 +625,12 @@ final class ProjectModel {
               onDisk != text else { return }
         text = onDisk
     }
+}
+
+/// A request to select (and scroll to) a range of the open file.
+struct RevealRequest: Equatable {
+    let id = UUID()
+    let range: NSRange
 }
 
 /// A neighbouring chapter in the reading order.

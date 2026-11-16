@@ -509,6 +509,41 @@ struct BookSummaryTests {
     }
 }
 
+// MARK: - Project search
+
+@Suite("Project search")
+struct ProjectSearchTests {
+    @Test("Case- and accent-insensitive matches with line numbers and source ranges")
+    func matches() {
+        let text = "Intro\n  The Café opens.\ncafe CAFE"
+        let matches = ProjectSearch.search("cafe", in: text)
+        #expect(matches.map(\.line) == [2, 3, 3])
+        #expect(matches[0].snippet == "The Café opens.")
+        #expect((matches[0].snippet as NSString).substring(with: matches[0].highlight) == "Café")
+        #expect((text as NSString).substring(with: matches[2].range) == "CAFE")
+    }
+
+    @Test("Long lines are cut around the match")
+    func snippets() {
+        let line = String(repeating: "a ", count: 100) + "needle " + String(repeating: "b ", count: 100)
+        let match = try! #require(ProjectSearch.search("needle", in: line).first)
+        #expect(match.snippet.hasPrefix("…"))
+        #expect(match.snippet.hasSuffix("…"))
+        #expect((match.snippet as NSString).substring(with: match.highlight) == "needle")
+    }
+
+    @Test("In-memory text wins over disk, and files without matches are left out")
+    func files() {
+        let results = ProjectSearch.search("x", in: [
+            (url: URL(fileURLWithPath: "/nope/a.md"), text: "x marks"),
+            (url: URL(fileURLWithPath: "/nope/b.md"), text: "nothing"),
+            (url: URL(fileURLWithPath: "/nope/missing.md"), text: nil),
+        ])
+        #expect(results.map(\.url.lastPathComponent) == ["a.md"])
+        #expect(ProjectSearch.search("  ", in: [(url: URL(fileURLWithPath: "/a"), text: "  ")]).isEmpty)
+    }
+}
+
 // MARK: - Code highlighting
 
 @Suite("Code highlighter")

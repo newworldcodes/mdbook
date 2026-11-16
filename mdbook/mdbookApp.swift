@@ -63,6 +63,12 @@ struct mdbookApp: App {
                 Divider()
             }
 
+            CommandGroup(after: .textEditing) {
+                Button("Find in Project…") { model.requestSearchFocus() }
+                    .keyboardShortcut("f", modifiers: [.command, .shift])
+                    .disabled(model.rootURL == nil)
+            }
+
             CommandMenu("Go") {
                 Button("Back") { model.goBack() }
                     .keyboardShortcut(.leftArrow, modifiers: [.command, .control])

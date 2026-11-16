@@ -12,7 +12,9 @@ struct ProjectSidebarView: View {
 
     var body: some View {
         Group {
-            if model.rootURL == nil {
+            if !model.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                SearchResultsView(model: model)
+            } else if model.rootURL == nil {
                 ContentUnavailableView {
                     Label("No Project", systemImage: "folder")
                 } description: {
@@ -85,6 +87,69 @@ extension ProjectSidebarView {
         ForEach(model.tree) { node in
             FileNodeRow(node: node, model: model)
         }
+    }
+}
+
+/// Project search results, grouped by chapter. Clicking a match opens the file with the
+/// match selected.
+struct SearchResultsView: View {
+    @Bindable var model: ProjectModel
+
+    var body: some View {
+        if model.searchResults.isEmpty {
+            if model.isSearching {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView.search(text: model.searchQuery)
+            }
+        } else {
+            List {
+                ForEach(model.searchResults) { file in
+                    Section {
+                        ForEach(file.matches) { match in
+                            Button {
+                                model.openSearchResult(file.url, match: match)
+                            } label: {
+                                matchRow(match)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: {
+                        HStack {
+                            Text(model.chapterTitle(for: file.url))
+                            Spacer()
+                            Text("\(file.matches.count)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        }
+                        .help(file.url.lastPathComponent)
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    private func matchRow(_ match: ProjectSearch.Match) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(match.line)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .frame(minWidth: 24, alignment: .trailing)
+            Text(highlighted(match))
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func highlighted(_ match: ProjectSearch.Match) -> AttributedString {
+        var text = AttributedString(match.snippet)
+        if let range = Range(match.highlight, in: text) {
+            text[range].font = .body.bold()
+            text[range].backgroundColor = Color.yellow.opacity(0.35)
+        }
+        return text
     }
 }
 
