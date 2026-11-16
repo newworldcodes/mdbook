@@ -31,6 +31,24 @@ struct mdbookApp: App {
                 Button("Save") { model.saveNow() }
                     .keyboardShortcut("s")
                     .disabled(!model.isDirty)
+                Divider()
+                Menu("Export Chapter") {
+                    Button("HTML…") { model.exportChapter(as: .html) }
+                    Button("PDF…") { model.exportChapter(as: .pdf) }
+                }
+                .disabled(!model.canExport)
+                Menu("Export Book") {
+                    Button("HTML…") { model.exportBook(as: .html) }
+                    Button("PDF…") { model.exportBook(as: .pdf) }
+                    Button("EPUB…") { model.exportBook(as: .epub) }
+                }
+                .disabled(!model.canExport)
+            }
+
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") { model.printChapter() }
+                    .keyboardShortcut("p")
+                    .disabled(!model.canExport)
             }
 
             CommandGroup(replacing: .textFormatting) {
@@ -61,6 +79,11 @@ struct mdbookApp: App {
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
                 }
                 Divider()
+            }
+
+            CommandGroup(after: .pasteboard) {
+                Button("Copy as Rich Text") { send(#selector(MarkdownTextView.copyAsRichText(_:))) }
+                    .keyboardShortcut("c", modifiers: [.command, .option, .shift])
             }
 
             CommandGroup(after: .textEditing) {

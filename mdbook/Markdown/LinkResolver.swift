@@ -94,7 +94,16 @@ nonisolated enum LinkResolver {
     /// Bare `http(s)://` URLs in `range` of `text`. swift-markdown doesn't enable cmark-gfm's
     /// autolink extension, so the editor and preview both find these themselves.
     static func bareURLs(in text: String, range: NSRange? = nil) -> [NSRange] {
-        let range = range ?? NSRange(location: 0, length: (text as NSString).length)
-        return bareURL.matches(in: text, range: range).map(\.range)
+        let ns = text as NSString
+        let range = range ?? NSRange(location: 0, length: ns.length)
+        // As GFM does, trailing punctuation ends the sentence, not the URL.
+        let trailing = CharacterSet(charactersIn: ".,:;!?'\"*_~")
+        return bareURL.matches(in: text, range: range).map { match in
+            var url = match.range
+            while url.length > 0, let scalar = UnicodeScalar(ns.character(at: NSMaxRange(url) - 1)), trailing.contains(scalar) {
+                url.length -= 1
+            }
+            return url
+        }
     }
 }

@@ -316,6 +316,91 @@ final class ProjectModel {
         if let nextChapter { navigate(to: nextChapter.url) }
     }
 
+    // MARK: - Export
+
+    /// The book's title from `book.toml`, else the folder name.
+    var bookTitle: String {
+        if let rootURL, let toml = try? TextFile.read(rootURL.appendingPathComponent("book.toml")).text,
+           let title = BookSummary.bookValue("title", inBookTOML: toml) {
+            return title
+        }
+        return projectName ?? "Book"
+    }
+
+    private var currentChapter: BookExport.Chapter? {
+        guard let selection else { return nil }
+        return BookExport.Chapter(url: selection, title: chapterTitle(for: selection), markdown: text)
+    }
+
+    /// Every chapter in reading order; the open one as edited.
+    private var allChapters: [BookExport.Chapter] {
+        readingOrder.compactMap { url in
+            let markdown = url == selection ? text : (try? TextFile.read(url).text)
+            return markdown.map { BookExport.Chapter(url: url, title: chapterTitle(for: url), markdown: $0) }
+        }
+    }
+
+    enum ExportFormat {
+        case html, pdf, epub
+
+        var fileExtension: String {
+            switch self {
+            case .html: "html"
+            case .pdf: "pdf"
+            case .epub: "epub"
+            }
+        }
+    }
+
+    var canExport: Bool { selection != nil }
+
+    func exportChapter(as format: ExportFormat) {
+        guard let chapter = currentChapter else { return }
+        let html = BookExport.page(title: chapter.title, body: BookExport.chapterBody(chapter))
+        guard let url = savePanel(name: chapter.url.deletingPathExtension().lastPathComponent, format: format) else { return }
+        write(format == .pdf ? nil : Data(html.utf8), pdfHTML: format == .pdf ? html : nil, to: url)
+    }
+
+    func exportBook(as format: ExportFormat) {
+        let chapters = allChapters
+        guard !chapters.isEmpty, let url = savePanel(name: bookTitle, format: format) else { return }
+        switch format {
+        case .epub:
+            write(BookExport.epub(title: bookTitle, chapters: chapters), pdfHTML: nil, to: url)
+        case .html, .pdf:
+            let html = BookExport.page(title: bookTitle, body: BookExport.bookBody(title: bookTitle, chapters: chapters))
+            write(format == .pdf ? nil : Data(html.utf8), pdfHTML: format == .pdf ? html : nil, to: url)
+        }
+    }
+
+    func printChapter() {
+        guard let chapter = currentChapter else { return }
+        let html = BookExport.page(title: chapter.title, body: BookExport.chapterBody(chapter))
+        PrintRenderer.print(html: html, title: chapter.title, window: NSApp.keyWindow)
+    }
+
+    private func savePanel(name: String, format: ExportFormat) -> URL? {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(name).\(format.fileExtension)"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
+    private func write(_ data: Data?, pdfHTML: String?, to url: URL) {
+        if let pdfHTML {
+            if !PrintRenderer.exportPDF(html: pdfHTML, to: url) {
+                errorMessage = "Couldn't create the PDF."
+            }
+            return
+        }
+        do {
+            try data?.write(to: url, options: .atomic)
+        } catch {
+            errorMessage = "Couldn't export to \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Search
 
     func requestSearchFocus() {

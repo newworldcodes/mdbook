@@ -91,6 +91,11 @@ nonisolated struct BookSummary: Equatable, Sendable {
 
     /// The `src` value of a `book.toml`'s `[book]` table, if set.
     static func sourceFolder(inBookTOML toml: String) -> String? {
+        bookValue("src", inBookTOML: toml)
+    }
+
+    /// A string value from a `book.toml`'s `[book]` table (`title`, `src`, `authors`…).
+    static func bookValue(_ key: String, inBookTOML toml: String) -> String? {
         var inBook = false
         for rawLine in toml.split(whereSeparator: \.isNewline) {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
@@ -98,9 +103,8 @@ nonisolated struct BookSummary: Equatable, Sendable {
                 inBook = line == "[book]"
                 continue
             }
-            guard inBook, line.hasPrefix("src") else { continue }
             let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "src" else { continue }
+            guard inBook, parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == key else { continue }
             let value = parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
             return value.isEmpty ? nil : value
         }

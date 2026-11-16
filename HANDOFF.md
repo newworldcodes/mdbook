@@ -49,6 +49,7 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | Preview | `Views/MarkdownPreviewView.swift`, `Markdown/MarkdownBlockParser.swift` | swift-markdown tree → `MarkdownBlock` tree (inline `AttributedString`s with `inlinePresentationIntent` and `.link`) → SwiftUI. Tables via `Grid`, task lists, images (local or `AsyncImage`), anchors via `ScrollViewReader`, approximate scroll sync from the source pane. |
 | Links | `Markdown/LinkResolver.swift`, `HeadingSlug.swift` | Relative paths resolve against the document; folders fall back to README/index/SUMMARY; `#anchor` and `file.md#anchor` use GitHub-style slugs. |
 | Tables | `Markdown/MarkdownTableFormatter.swift`, `TableColumnSizer.swift`, `Editor/MarkdownTableRendering.swift` + styler/layout manager | Caret outside: the table is drawn by the layout manager with wrapping cells, fitted to the editor width (see below). Caret inside: aligned monospaced source; columns re-padded on leave. The preview's `TableGridLayout` uses the same `TableColumnSizer`, so both wrap cells instead of overflowing. |
+| Export | `Markdown/HTMLRenderer.swift`, `Export/BookExport.swift`, `Export/PrintRenderer.swift` | `HTMLRenderer` walks the swift-markdown tree to XHTML-compatible HTML (GitHub heading ids, inline code colours, task boxes, table alignment). File ▸ Export Chapter/Book: HTML (one self-contained file, images as data URIs; a book gets a contents list, `chN-` id prefixes and cross-chapter links rewritten to anchors), PDF, and EPUB 3 (XHTML per chapter, tidied if raw HTML isn't well-formed; zipped by `StoredZip`). PDF/Print (⌘P) and Edit ▸ Copy as Rich Text go HTML → `NSAttributedString` → TextKit 1 text view → `NSPrintOperation`, because WKWebView's content process dies in the sandbox without the network entitlement. Printed tables are sized with `TableColumnSizer` (fixed layout) and images scaled to the page. |
 | Code highlighting | `Markdown/CodeHighlighter.swift` | Hand-written tokenizer, ~20 languages plus a generic fallback. Used by both editor and preview. Colours in `EditorTheme.color(for:)`. |
 | Tests | `mdbookTests/mdbookTests.swift` | 49 Swift Testing tests: block parser, highlighter (including cmark position quirks), source map, table formatter, code highlighter, link resolver, slugs, file tree. No tests yet for the coordinator, autosave, rename or history. |
 
@@ -169,9 +170,8 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 1. Images inside running text in the WYSIWYG view (block image lines are done).
 2. Incremental restyling for large files (or adopt STTextView).
-3. Export to HTML/PDF, printing, copy as rich text.
-4. Footnotes, math, Mermaid, emoji shortcodes.
-5. Tests for the coordinator, autosave, rename and history.
+3. Footnotes, math, Mermaid, emoji shortcodes.
+4. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a

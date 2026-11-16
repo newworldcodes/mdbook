@@ -453,8 +453,9 @@ struct TableColumnSizerTests {
         #expect(runs == ["grammar-", "script-", "notes.md", "(var/", "const)", "plain"])
     }
 
-    @Test("If even the minimums overflow, they scale down to fit but not below the floor")
+    @Test("If even the minimums overflow, the largest give way first, never below the floor")
     func overflow() {
+        #expect(TableColumnSizer.widths(natural: [100, 900], minimum: [60, 300], available: 200) == [60, 140])
         let widths = TableColumnSizer.widths(natural: [300, 300], minimum: [200, 200], available: 200)
         #expect(widths == [100, 100])
         #expect(TableColumnSizer.widths(natural: [300, 300], minimum: [200, 200], available: 20) == [40, 40])
@@ -641,6 +642,65 @@ struct TextFileTests {
         defer { try? FileManager.default.removeItem(at: url) }
         try Data([0xEF, 0xBB, 0xBF, 0x23, 0x20, 0x41]).write(to: url)
         #expect(try TextFile.read(url).text == "# A")
+    }
+}
+
+// MARK: - Export
+
+@Suite("HTML export")
+struct HTMLExportTests {
+    @Test("Blocks and inlines render as escaped, XHTML-compatible HTML")
+    func renderer() {
+        let html = HTMLRenderer().render("""
+        # Hello & 1 < 2
+
+        Some **bold**, *em*, ~~gone~~, `a<b`, [link](x.md) and https://e.com.
+
+        - [x] done
+        - [ ] todo
+
+        | L | R |
+        |:--|--:|
+        | 1 | 2 |
+
+        ```swift
+        let x = 1
+        ```
+
+        ![alt](pic.png)
+        """)
+        #expect(html.contains("<h1 id=\"hello--1--2\">Hello &amp; 1 &lt; 2</h1>"))
+        #expect(html.contains("<strong>bold</strong>, <em>em</em>, <del>gone</del>, <code>a&lt;b</code>"))
+        #expect(html.contains("<a href=\"x.md\">link</a>"))
+        #expect(html.contains("<a href=\"https://e.com\">https://e.com</a>."))
+        #expect(html.contains("<input type=\"checkbox\" disabled=\"disabled\" checked=\"checked\"/> done"))
+        #expect(html.contains("<th style=\"text-align:right\">R</th>"))
+        #expect(html.contains("<span style=\"color:#ad3da4\">let</span>"))
+        #expect(html.contains("<img src=\"pic.png\" alt=\"alt\"/>"))
+        #expect((try? XMLDocument(xmlString: "<div>\(html)</div>", options: [])) != nil)
+    }
+
+    @Test("A one-file book prefixes ids and turns links between chapters into anchors")
+    func bookLinks() {
+        let one = BookExport.Chapter(url: URL(fileURLWithPath: "/b/one.md"), title: "One", markdown: "# Start\n\nSee [two](two.md#end) and [here](#start).")
+        let two = BookExport.Chapter(url: URL(fileURLWithPath: "/b/two.md"), title: "Two", markdown: "## End")
+        let body = BookExport.bookBody(title: "Book", chapters: [one, two])
+        #expect(body.contains("<a href=\"#ch1\">One</a>"))
+        #expect(body.contains("<section class=\"chapter\" id=\"ch2\">"))
+        #expect(body.contains("<h1 id=\"ch1-start\">"))
+        #expect(body.contains("<a href=\"#ch2-end\">two</a>"))
+        #expect(body.contains("<a href=\"#ch1-start\">here</a>"))
+    }
+
+    @Test("Stored zip entries carry correct CRCs")
+    func zip() {
+        #expect(CRC32.checksum(Data("The quick brown fox jumps over the lazy dog".utf8)) == 0x414F_A339)
+        var zip = StoredZip()
+        zip.add("mimetype", Data("application/epub+zip".utf8))
+        let data = zip.data
+        #expect(data.starts(with: [0x50, 0x4B, 0x03, 0x04]))
+        // The mimetype must be readable at a fixed offset for EPUB readers.
+        #expect(String(data: data.subdata(in: 38..<58), encoding: .ascii) == "application/epub+zip")
     }
 }
 

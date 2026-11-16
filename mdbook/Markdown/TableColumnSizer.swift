@@ -24,18 +24,29 @@ nonisolated enum TableColumnSizer {
     ///   - natural: Each column's width with no wrapping (its widest cell on one line).
     ///   - minimum: The narrowest each column can go without breaking a word.
     ///   - available: The width the table must fit in.
-    /// - Returns: One width per column. If even the minimums don't fit, they are scaled
-    ///   down to `available` (words then break mid-word) but never below `floor`.
+    /// - Returns: One width per column. If even the minimums don't fit, the largest
+    ///   minimums are capped (their longest runs, usually code, then break) so columns of
+    ///   ordinary words keep theirs; no column goes below `floor`.
     static func widths(natural: [CGFloat], minimum: [CGFloat], available: CGFloat, floor: CGFloat = 40) -> [CGFloat] {
         let count = natural.count
         guard count > 0 else { return [] }
         let minimum = (0..<count).map { min(minimum.indices.contains($0) ? minimum[$0] : 0, natural[$0]) }
         if natural.reduce(0, +) <= available { return natural }
 
-        let minimumTotal = minimum.reduce(0, +)
-        if minimumTotal >= available {
-            let scale = minimumTotal > 0 ? available / minimumTotal : 0
-            return minimum.map { max(floor, $0 * scale) }
+        if minimum.reduce(0, +) >= available {
+            // The cap where sum(min(minimum, cap)) == available.
+            let sorted = minimum.sorted()
+            var cap = available / CGFloat(count)
+            var settled: CGFloat = 0
+            for (index, value) in sorted.enumerated() {
+                let rest = CGFloat(count - index)
+                if settled + value * rest >= available {
+                    cap = (available - settled) / rest
+                    break
+                }
+                settled += value
+            }
+            return minimum.map { max(floor, min($0, cap)) }
         }
 
         // Columns narrower than an equal share keep their natural width. What's left is

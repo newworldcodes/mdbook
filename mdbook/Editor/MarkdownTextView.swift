@@ -546,4 +546,27 @@ final class MarkdownTextView: NSTextView {
         }
         return candidate
     }
+
+    // MARK: - Copy as rich text
+
+    /// Copies the selection (or the whole document) rendered: HTML and RTF for apps that
+    /// take formatting, the markdown itself as plain text.
+    @objc func copyAsRichText(_ sender: Any?) {
+        let ns = string as NSString
+        let range = selectedRange().length > 0 ? selectedRange() : NSRange(location: 0, length: ns.length)
+        let markdown = ns.substring(with: range)
+        var renderer = HTMLRenderer()
+        if let documentURL {
+            renderer.imageSource = { BookExport.embeddedImage($0, relativeTo: documentURL) }
+        }
+        let html = BookExport.page(title: documentURL?.lastPathComponent ?? "", body: renderer.render(markdown))
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(html, forType: .html)
+        if let attributed = PrintRenderer.attributedString(html: html),
+           let rtf = attributed.rtf(from: NSRange(location: 0, length: attributed.length), documentAttributes: [:]) {
+            pasteboard.setData(rtf, forType: .rtf)
+        }
+        pasteboard.setString(markdown, forType: .string)
+    }
 }
