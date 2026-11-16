@@ -96,13 +96,17 @@ struct MarkdownEditorView: NSViewRepresentable {
         }
 
         func configure(_ textView: MarkdownTextView) {
+            textView.onFormatTable = { [weak self] in self?.formatTableAtCaret() }
             textView.textContainerInset = theme.textContainerInset
             textView.font = theme.baseFont
             textView.textColor = theme.textColor
             textView.typingAttributes = theme.baseAttributes
             textView.linkTextAttributes = theme.linkTextAttributes
             textView.insertionPointColor = theme.accentColor
-            (textView.layoutManager as? MarkdownLayoutManager)?.codeBlockBackground = theme.codeBackground
+            if let layoutManager = textView.layoutManager as? MarkdownLayoutManager {
+                layoutManager.codeBlockBackground = theme.codeBackground
+                layoutManager.tableHeaderBackground = theme.codeBackground
+            }
         }
 
         func observeScrolling(of scrollView: NSScrollView) {
@@ -120,6 +124,57 @@ struct MarkdownEditorView: NSViewRepresentable {
                     let fraction = scrollable > 0 ? Double(visible.origin.y / scrollable) : 0
                     onScroll(min(max(fraction, 0), 1))
                 }
+            }
+        }
+
+        // MARK: Tables
+
+        /// Aligns the columns of the table containing the caret.
+        func formatTableAtCaret() {
+            guard let textView else { return }
+            let location = textView.selectedRange().location
+            guard let table = spans.tables.first(where: { $0.contains(location) }) else {
+                NSSound.beep()
+                return
+            }
+            formatTable(table)
+        }
+
+        private func formatTable(_ table: MarkdownSpans.Table) {
+            guard let textView, let storage = textView.textStorage,
+                  NSMaxRange(table.range) <= storage.length else { return }
+            let ns = storage.string as NSString
+            let source = ns.substring(with: table.range)
+            let formatted = MarkdownTableFormatter.format(source)
+            guard formatted != source,
+                  textView.shouldChangeText(in: table.range, replacementString: formatted) else { return }
+
+            let selection = textView.selectedRange()
+            storage.replaceCharacters(in: table.range, with: formatted)
+            textView.didChangeText()
+
+            // Keep the caret where the user left it, shifted if the table grew or shrank above it.
+            let delta = (formatted as NSString).length - table.range.length
+            var restored = selection
+            if selection.location >= NSMaxRange(table.range) {
+                restored.location += delta
+            } else if table.contains(selection.location) {
+                restored = NSRange(location: min(selection.location, NSMaxRange(table.range) + delta), length: 0)
+            }
+            let length = storage.length
+            restored.location = min(max(0, restored.location), length)
+            restored.length = min(restored.length, length - restored.location)
+            textView.setSelectedRange(restored)
+        }
+
+        /// When the caret leaves a table, tidy its columns.
+        private func formatTableIfLeft(from oldParagraph: NSRange?, to newParagraph: NSRange) {
+            guard theme.mode == .wysiwyg, let oldParagraph,
+                  let table = spans.tables.first(where: { $0.contains(oldParagraph.location) }),
+                  !table.contains(newParagraph.location) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let current = self.spans.tables.first(where: { $0.range == table.range }) else { return }
+                self.formatTable(current)
             }
         }
 
@@ -159,6 +214,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard let textView, let storage = textView.textStorage, theme.hidesMarkers else { return }
             let newRange = paragraphRange(for: textView)
             guard newRange != activeParagraph else { return }
+            formatTableIfLeft(from: activeParagraph, to: newRange)
             let styler = MarkdownStyler(theme: theme)
             if let old = activeParagraph, NSMaxRange(old) <= storage.length {
                 styler.setMarkersVisible(false, in: old, storage: storage)

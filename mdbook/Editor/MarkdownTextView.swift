@@ -139,6 +139,24 @@ final class MarkdownTextView: NSTextView {
 
     // MARK: - Formatting actions (reached through the responder chain)
 
+    /// Set by the editor coordinator, which knows where the tables are.
+    var onFormatTable: (() -> Void)?
+
+    @objc func formatTableMarkdown(_ sender: Any?) { onFormatTable?() }
+
+    @objc func insertTableMarkdown(_ sender: Any?) {
+        let ns = string as NSString
+        let selection = selectedRange()
+        let paragraph = ns.paragraphRange(for: selection)
+        let lineIsEmpty = ns.substring(with: paragraph).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let table = "| Column 1 | Column 2 |\n| -------- | -------- |\n|          |          |\n"
+        let prefix = lineIsEmpty || selection.location == paragraph.location ? "" : "\n\n"
+        let insertion = prefix + table
+        insertText(insertion, replacementRange: selection)
+        // Park the caret in the first header cell.
+        setSelectedRange(NSRange(location: selection.location + (prefix as NSString).length + 2, length: 8))
+    }
+
     @objc func toggleBoldMarkdown(_ sender: Any?) { toggleWrapping(with: "**") }
     @objc func toggleItalicMarkdown(_ sender: Any?) { toggleWrapping(with: "*") }
     @objc func toggleStrikethroughMarkdown(_ sender: Any?) { toggleWrapping(with: "~~") }

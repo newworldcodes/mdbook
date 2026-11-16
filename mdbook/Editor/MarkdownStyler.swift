@@ -77,6 +77,21 @@ struct MarkdownStyler {
 
         for line in spans.tableLines {
             storage.addAttribute(.font, value: theme.codeFont, range: line)
+            if theme.mode == .wysiwyg {
+                let style = mutableParagraphStyle()
+                style.lineSpacing = 2
+                style.paragraphSpacing = 0
+                storage.addAttribute(.paragraphStyle, value: style, range: line)
+            }
+        }
+        for table in spans.tables {
+            // The layout manager draws a panel behind `.markdownTableHeader`.
+            storage.addAttribute(.markdownTableHeader, value: true, range: table.headerLine)
+            addTrait(.bold, in: table.headerLine, storage: storage)
+            storage.addAttribute(.foregroundColor, value: theme.markerColor, range: table.delimiterLine)
+            for pipe in table.pipes {
+                storage.addAttribute(.foregroundColor, value: theme.markerColor, range: pipe)
+            }
         }
 
         for line in spans.thematicBreaks {

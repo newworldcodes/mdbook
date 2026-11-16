@@ -47,6 +47,11 @@ struct mdbookApp: App {
                     .keyboardShortcut("h", modifiers: [.command, .shift])
                 Button("Add Link") { send(#selector(MarkdownTextView.insertLinkMarkdown(_:))) }
                     .keyboardShortcut("k")
+                Divider()
+                Button("Insert Table") { send(#selector(MarkdownTextView.insertTableMarkdown(_:))) }
+                    .keyboardShortcut("t", modifiers: [.command, .option])
+                Button("Align Table Columns") { send(#selector(MarkdownTextView.formatTableMarkdown(_:))) }
+                    .keyboardShortcut("t", modifiers: [.command, .option, .shift])
             }
 
             CommandGroup(after: .sidebar) {

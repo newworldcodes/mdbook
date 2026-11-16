@@ -43,10 +43,25 @@ nonisolated struct MarkdownSpans: Sendable {
         var isImage: Bool
     }
 
+    struct Table: Sendable {
+        /// From the start of the header line to the end of the last row (no trailing newline).
+        var range: NSRange
+        var headerLine: NSRange
+        var delimiterLine: NSRange
+        var lines: [NSRange]
+        /// Every unescaped `|` outside inline code, across all lines.
+        var pipes: [NSRange]
+
+        func contains(_ location: Int) -> Bool {
+            location >= range.location && location <= NSMaxRange(range)
+        }
+    }
+
     var headings: [Heading] = []
     var codeBlocks: [CodeBlock] = []
     var blockQuotes: [BlockQuote] = []
     var listItems: [ListItem] = []
+    var tables: [Table] = []
     var tableLines: [NSRange] = []
     var thematicBreaks: [NSRange] = []
     var bold: [NSRange] = []
@@ -105,17 +120,25 @@ nonisolated enum MarkdownHighlighter {
         // First pass: table delimiter rows tell us which neighbouring lines form a table.
         var tableLineIndices = Set<Int>()
         for (index, line) in lines.enumerated() where index > 0 {
-            guard line.length > 0, ns.substring(with: line).contains("-"),
+            guard !tableLineIndices.contains(index), line.length > 0, ns.substring(with: line).contains("-"),
                   patterns.tableDelimiter.firstMatch(in: text, range: line) != nil else { continue }
             let header = lines[index - 1]
             guard header.length > 0, ns.substring(with: header).contains("|") else { continue }
-            tableLineIndices.insert(index - 1)
-            tableLineIndices.insert(index)
+            var tableLines = [header, line]
             var next = index + 1
             while next < lines.count, lines[next].length > 0, ns.substring(with: lines[next]).contains("|") {
-                tableLineIndices.insert(next)
+                tableLines.append(lines[next])
                 next += 1
             }
+            for tableIndex in (index - 1)..<next { tableLineIndices.insert(tableIndex) }
+            guard let last = tableLines.last else { continue }
+            spans.tables.append(.init(
+                range: NSRange(location: header.location, length: NSMaxRange(last) - header.location),
+                headerLine: header,
+                delimiterLine: line,
+                lines: tableLines,
+                pipes: tableLines.flatMap { pipeRanges(in: $0, ns: ns) }
+            ))
         }
 
         var fenceStart: Int?
@@ -232,6 +255,29 @@ nonisolated enum MarkdownHighlighter {
         // Inline passes run per construct type; report links in document order.
         spans.links.sort { $0.text.location < $1.text.location }
         return spans
+    }
+
+    /// Positions of cell-separating pipes in a table line (escaped pipes and pipes in
+    /// inline code don't count).
+    private static func pipeRanges(in line: NSRange, ns: NSString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        var inCode = false
+        var escaped = false
+        var index = line.location
+        while index < NSMaxRange(line) {
+            let character = ns.character(at: index)
+            if escaped {
+                escaped = false
+            } else if character == 0x5C { // backslash
+                escaped = true
+            } else if character == 0x60 { // backtick
+                inCode.toggle()
+            } else if character == 0x7C, !inCode { // pipe
+                ranges.append(NSRange(location: index, length: 1))
+            }
+            index += 1
+        }
+        return ranges
     }
 
     // MARK: - Inline constructs

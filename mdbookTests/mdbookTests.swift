@@ -202,6 +202,56 @@ struct LinkResolverTests {
     }
 }
 
+// MARK: - Table formatting
+
+@Suite("Table formatter")
+struct MarkdownTableFormatterTests {
+    @Test("Columns are padded and aligned")
+    func aligns() {
+        let source = "| Name | Value |\n|:--|--:|\n| alpha | 1 |\n| b | 22 |"
+        let expected = """
+        | Name  | Value |
+        | :---- | ----: |
+        | alpha |     1 |
+        | b     |    22 |
+        """
+        #expect(MarkdownTableFormatter.format(source) == expected)
+    }
+
+    @Test("Formatting is idempotent and keeps indentation")
+    func idempotent() {
+        let once = MarkdownTableFormatter.format("  | a | b |\n  |---|---|\n  | 1 | 2 |")
+        #expect(once.hasPrefix("  | a"))
+        #expect(MarkdownTableFormatter.format(once) == once)
+    }
+
+    @Test("Escaped pipes and pipes in code don't split cells")
+    func protectedPipes() {
+        #expect(MarkdownTableFormatter.cells(in: "| `a|b` | c \\| d |") == ["`a|b`", "c \\| d"])
+        #expect(MarkdownTableFormatter.cells(in: "no | outer | pipes") == ["no", "outer", "pipes"])
+    }
+
+    @Test("Missing cells are filled and centre alignment is preserved")
+    func missingCells() {
+        let formatted = MarkdownTableFormatter.format("| a | b | c |\n|:-:|---|---|\n| 1 |")
+        #expect(formatted == "|  a  | b   | c   |\n| :-: | --- | --- |\n|  1  |     |     |")
+    }
+}
+
+@Suite("Table spans")
+struct TableSpanTests {
+    @Test("Tables report their lines and pipes")
+    func tableSpans() {
+        let text = "intro\n| a | b |\n|---|---|\n| `x|y` | 2 |\n\nafter"
+        let spans = MarkdownHighlighter.scan(text)
+        #expect(spans.tables.count == 1)
+        let table = spans.tables[0]
+        #expect(table.lines.count == 3)
+        #expect(table.pipes.count == 9)
+        #expect((text as NSString).substring(with: table.range).hasSuffix("| 2 |"))
+    }
+}
+
 // MARK: - Heading anchors
 
 @Suite("Heading slugs")
