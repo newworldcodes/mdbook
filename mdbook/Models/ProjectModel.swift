@@ -63,7 +63,9 @@ final class ProjectModel {
 
     // MARK: Document state
 
-    private(set) var text: String = ""
+    private(set) var text: String = "" {
+        didSet { scheduleDocumentStatistics() }
+    }
     private(set) var isDirty = false
     /// The open file's contents as last read from or written to disk, to tell our own saves
     /// apart from changes made by other apps.
@@ -757,41 +759,56 @@ final class ProjectModel {
 
     // MARK: - Outline
 
-    struct OutlineEntry: Identifiable, Hashable {
+    nonisolated struct OutlineEntry: Identifiable, Hashable, Sendable {
         let id: Int
         let level: Int
         let title: String
     }
 
-    @ObservationIgnored private var statisticsCache: (text: String, words: Int)?
-
+    /// Headings of the current document, for the Outline menu.
+    private(set) var outline: [OutlineEntry] = []
     /// Words in the open document (markdown syntax isn't counted as words).
-    var wordCount: Int {
-        if let statisticsCache, statisticsCache.text == text { return statisticsCache.words }
-        var words = 0
-        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
-        statisticsCache = (text, words)
-        return words
-    }
+    private(set) var wordCount = 0
+    @ObservationIgnored private var statisticsTask: Task<Void, Never>?
 
     /// Reading time in minutes at 230 words a minute, at least one.
     var readingMinutes: Int { max(1, Int((Double(wordCount) / 230).rounded())) }
 
-    @ObservationIgnored private var outlineCache: (text: String, entries: [OutlineEntry])?
+    /// Recomputes the outline and word count off the main actor, once typing pauses: both
+    /// walk the whole document, which is too slow per keystroke in a long chapter.
+    private func scheduleDocumentStatistics() {
+        statisticsTask?.cancel()
+        let source = text
+        let immediate = !isDirty
+        statisticsTask = Task { [weak self] in
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+            }
+            let (outline, words) = await Task.detached(priority: .utility) {
+                (Self.outline(of: source), Self.countWords(in: source))
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            if self.outline != outline { self.outline = outline }
+            if self.wordCount != words { self.wordCount = words }
+        }
+    }
 
-    /// Headings of the current document, for the Outline menu.
-    var outline: [OutlineEntry] {
-        if let outlineCache, outlineCache.text == text { return outlineCache.entries }
+    nonisolated static func outline(of text: String) -> [OutlineEntry] {
         let ns = text as NSString
-        let entries = MarkdownHighlighter.scan(text).headings
+        return MarkdownHighlighter.scan(text).headings
             .sorted { $0.line.location < $1.line.location }
             .enumerated()
             .map { index, heading in
                 let title = HeadingSlug.plainText(ofHeadingSource: ns.substring(with: heading.content))
                 return OutlineEntry(id: index, level: heading.level, title: title.isEmpty ? "Untitled" : title)
             }
-        outlineCache = (text, entries)
-        return entries
+    }
+
+    nonisolated static func countWords(in text: String) -> Int {
+        var words = 0
+        text.enumerateSubstrings(in: text.startIndex..., options: [.byWords, .substringNotRequired]) { _, _, _, _ in words += 1 }
+        return words
     }
 
     func jump(to entry: OutlineEntry) {

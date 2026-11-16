@@ -42,6 +42,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.documentURL = documentURL
         textView.delegate = coordinator
         textView.layoutManager?.delegate = coordinator
+        textView.textStorage?.delegate = coordinator
         coordinator.configure(textView)
         coordinator.observeScrolling(of: scrollView)
         textView.string = text
@@ -97,7 +98,7 @@ struct MarkdownEditorView: NSViewRepresentable {
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate, NSTextStorageDelegate {
         var parent: MarkdownEditorView
         weak var textView: MarkdownTextView?
         var theme: EditorTheme
@@ -108,6 +109,16 @@ struct MarkdownEditorView: NSViewRepresentable {
         private var spans = MarkdownSpans()
         private var scrollObserver: NSObjectProtocol?
         private var restyleForWidthPending = false
+        /// Characters edited since the last restyle (in current coordinates) and the change
+        /// in length, for restyling incrementally.
+        private var pendingEdit: (range: NSRange, delta: Int)?
+        /// Below this length a full restyle is cheap enough to do on every keystroke.
+        static let incrementalThreshold = 20_000
+        /// Above this length the rescan after a keystroke runs in the background.
+        static let backgroundScanThreshold = 200_000
+        /// Bumped on every edit, so a background scan of older text is discarded.
+        private var textVersion = 0
+        private var backgroundScan: Task<Void, Never>?
         private let imageCache = NSCache<NSString, NSImage>()
         /// Local images that failed to load; cleared on every edit (a dropped image may now exist).
         private var missingImages = Set<String>()
@@ -240,10 +251,118 @@ struct MarkdownEditorView: NSViewRepresentable {
 
         // MARK: Styling
 
-        /// Rescans the document and reapplies every attribute.
-        func restyleEverything() {
+        /// After an edit: rescans, then restyles only the region whose styling changed (whole
+        /// paragraphs and blocks), unless the document is short or most of it changed.
+        private func restyleAfterEdit() {
+            guard let textView, let storage = textView.textStorage, let edit = pendingEdit else {
+                restyleEverything()
+                return
+            }
+            pendingEdit = nil
+            guard storage.length >= Self.incrementalThreshold else {
+                restyleEverything()
+                return
+            }
+            if storage.length >= Self.backgroundScanThreshold {
+                restyleLargeDocumentAfterEdit(edit)
+                return
+            }
+            let previous = spans
+            let current = MarkdownHighlighter.scan(storage.string)
+            let ns = storage.string as NSString
+            let caretParagraph = paragraphRange(for: textView)
+            var dirty = IncrementalStyling.dirtyRange(old: previous, new: current, edit: edit.range, delta: edit.delta) ?? edit.range
+            // The caret's paragraph (or table) shows its markers; include it, and the one it left.
+            dirty = NSUnionRange(dirty, caretParagraph)
+            if let activeParagraph, NSMaxRange(activeParagraph) <= storage.length {
+                dirty = NSUnionRange(dirty, activeParagraph)
+            }
+            let region = IncrementalStyling.expand(dirty, in: ns, spans: current)
+            guard region.length < storage.length / 2 else {
+                restyleEverything(spans: current)
+                return
+            }
+            spans = current
+            restyle(region: region)
+        }
+
+        /// Restyles `region` (whole paragraphs and blocks) with the current spans.
+        private func restyle(region: NSRange) {
             guard let textView, let storage = textView.textStorage else { return }
-            spans = MarkdownHighlighter.scan(storage.string)
+            let caretParagraph = paragraphRange(for: textView)
+            activeParagraph = caretParagraph
+            MarkdownStyler(theme: theme).applyAll(
+                to: storage,
+                spans: spans,
+                activeRegion: activeRegion(for: caretParagraph),
+                blockWidth: blockWidth(of: textView),
+                loadImage: { [weak self] in self?.image(for: $0) },
+                region: region
+            )
+            invalidateGlyphs(in: region, textView: textView)
+            textView.typingAttributes = theme.baseAttributes
+            applyFocus()
+        }
+
+        /// Large documents: restyle the edited paragraph now with the previous spans shifted
+        /// past the edit, and rescan in the background, restyling whatever that changes.
+        private func restyleLargeDocumentAfterEdit(_ edit: (range: NSRange, delta: Int)) {
+            guard let textView, let storage = textView.textStorage else { return }
+            textVersion += 1
+            let version = textVersion
+            spans = spans.shifted(past: edit.range, delta: edit.delta)
+            let ns = storage.string as NSString
+            var local = NSUnionRange(edit.range, paragraphRange(for: textView))
+            if let activeParagraph, NSMaxRange(activeParagraph) <= storage.length {
+                local = NSUnionRange(local, activeParagraph)
+            }
+            restyle(region: IncrementalStyling.expand(local, in: ns, spans: spans))
+
+            // Snapshot the text: the storage keeps changing while the scan runs.
+            let snapshot = String(ns)
+            backgroundScan?.cancel()
+            backgroundScan = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                let fresh = await Task.detached(priority: .userInitiated) { MarkdownHighlighter.scan(snapshot) }.value
+                guard let self, !Task.isCancelled, version == self.textVersion,
+                      let storage = self.textView?.textStorage else { return }
+                let previous = self.spans
+                self.spans = fresh
+                guard let dirty = IncrementalStyling.dirtyRange(old: previous, new: fresh) else { return }
+                let region = IncrementalStyling.expand(dirty, in: storage.string as NSString, spans: fresh)
+                if region.length >= storage.length / 2 {
+                    self.restyleEverything(spans: fresh)
+                } else {
+                    self.restyle(region: region)
+                }
+            }
+        }
+
+        // MARK: NSTextStorageDelegate
+
+        func textStorage(_ textStorage: NSTextStorage, didProcessEditing editedMask: NSTextStorageEditActions, range editedRange: NSRange, changeInLength delta: Int) {
+            guard editedMask.contains(.editedCharacters) else { return }
+            if let pending = pendingEdit {
+                // Map the earlier edit into current coordinates, then merge.
+                var earlier = pending.range
+                if earlier.location >= NSMaxRange(editedRange) - delta { earlier.location += delta }
+                pendingEdit = (NSUnionRange(earlier, editedRange), pending.delta + delta)
+            } else {
+                pendingEdit = (editedRange, delta)
+            }
+        }
+
+        /// Rescans the document and reapplies every attribute.
+        func restyleEverything(spans precomputed: MarkdownSpans? = nil) {
+            guard let textView, let storage = textView.textStorage else { return }
+            pendingEdit = nil
+            if precomputed == nil {
+                // A full rescan supersedes any scan still running.
+                textVersion += 1
+                backgroundScan?.cancel()
+            }
+            spans = precomputed ?? MarkdownHighlighter.scan(storage.string)
             let caretParagraph = paragraphRange(for: textView)
             activeParagraph = caretParagraph
             MarkdownStyler(theme: theme).applyAll(
@@ -476,7 +595,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             parent.text = textView.string
             isPushingChange = false
             missingImages.removeAll()
-            restyleEverything()
+            restyleAfterEdit()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {

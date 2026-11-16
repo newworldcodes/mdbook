@@ -322,6 +322,19 @@ struct MarkdownHighlighterTests {
     }
 }
 
+@Suite("Range index")
+struct RangeIndexTests {
+    @Test("Overlap queries against merged, sorted runs")
+    func overlaps() {
+        let index = RangeIndex([NSRange(location: 10, length: 5), NSRange(location: 0, length: 3), NSRange(location: 12, length: 10)])
+        #expect(index.intersects(NSRange(location: 2, length: 1)))
+        #expect(!index.intersects(NSRange(location: 3, length: 7)))
+        #expect(index.intersects(NSRange(location: 21, length: 4)))
+        #expect(!index.intersects(NSRange(location: 22, length: 4)))
+        #expect(!index.intersects(NSRange(location: 11, length: 0)))
+    }
+}
+
 @Suite("Markdown source map")
 struct MarkdownSourceMapTests {
     @Test("UTF-8 byte columns map to UTF-16 offsets")
@@ -639,10 +652,8 @@ struct SettingsTests {
 
     @Test("Word count ignores markdown syntax")
     func words() {
-        let model = ProjectModel()
-        model.updateText("# Title\n\nSome **bold** words, and `code`.")
-        #expect(model.wordCount == 6)
-        #expect(model.readingMinutes == 1)
+        #expect(ProjectModel.countWords(in: "# Title\n\nSome **bold** words, and `code`.") == 6)
+        #expect(ProjectModel.outline(of: "# One\n\n## Two **b**").map(\.title) == ["One", "Two b"])
     }
 }
 

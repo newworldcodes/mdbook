@@ -14,15 +14,20 @@ struct MarkdownStyler {
     /// (widened to the whole table when the caret is inside one); markup there stays
     /// visible so the user can edit it. Rendered tables and images are fitted to `blockWidth`;
     /// `loadImage` resolves an image destination (nil while it isn't available).
+    /// With a `region` (whole paragraphs and blocks, see `IncrementalStyling.expand`), only
+    /// that part of the document is restyled.
     func applyAll(
         to storage: NSTextStorage,
         spans: MarkdownSpans,
         activeRegion: NSRange?,
         blockWidth: CGFloat = .greatestFiniteMagnitude,
-        loadImage: ((String) -> NSImage?)? = nil
+        loadImage: ((String) -> NSImage?)? = nil,
+        region: NSRange? = nil
     ) {
-        let full = NSRange(location: 0, length: storage.length)
+        let whole = NSRange(location: 0, length: storage.length)
+        let full = region.map { NSIntersectionRange($0, whole) } ?? whole
         guard full.length > 0 else { return }
+        let spans = region == nil ? spans : spans.limited(to: full)
 
         storage.beginEditing()
         storage.setAttributes(theme.baseAttributes, range: full)

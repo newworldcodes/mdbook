@@ -88,6 +88,10 @@ nonisolated struct MarkdownSpans: Sendable {
 
 nonisolated enum MarkdownHighlighter {
     static func scan(_ text: String) -> MarkdownSpans {
+        // Work on one UTF-16 NSString. A native Swift string handed to NSRegularExpression
+        // or `character(at:)` is bridged and indexed through UTF-8 on every call, which made
+        // scanning quadratic in practice; bridging this copy back and forth is free.
+        let text = NSString(characters: Array(text.utf16), length: text.utf16.count) as String
         let document = Document(parsing: text, options: [.disableSmartOpts])
         var walker = SpanWalker(text: text, map: MarkdownSourceMap(text))
         walker.visit(document)
@@ -117,19 +121,18 @@ nonisolated enum MarkdownHighlighter {
     private static func applyMath(to spans: inout MarkdownSpans, in text: String) {
         guard text.contains("$") else { return }
         let ns = text as NSString
-        let code = spans.codeBlocks.map(\.range) + spans.inlineCode
-        func inCode(_ range: NSRange) -> Bool {
-            code.contains { NSIntersectionRange($0, range).length > 0 }
-        }
+        let code = RangeIndex(spans.codeBlocks.map(\.range) + spans.inlineCode)
 
-        var math = MarkdownExtensions.inlineMathRanges(in: text).map(\.range).filter { !inCode($0) }
+        var math = MarkdownExtensions.inlineMathRanges(in: text).map(\.range).filter { !code.intersects($0) }
         // Display math: a line starting with $$ through the line ending with $$.
-        var lineStart = 0
-        var openLine: Int?
-        while lineStart < ns.length {
-            let line = ns.lineRange(for: NSRange(location: lineStart, length: 0))
-            let content = ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !inCode(line) {
+        if text.contains("$$") {
+            var lineStart = 0
+            var openLine: Int?
+            while lineStart < ns.length {
+                let line = ns.lineRange(for: NSRange(location: lineStart, length: 0))
+                lineStart = NSMaxRange(line)
+                guard !code.intersects(line) else { continue }
+                let content = ns.substring(with: line).trimmingCharacters(in: .whitespacesAndNewlines)
                 if let start = openLine {
                     if content.hasSuffix("$$") {
                         math.append(NSRange(location: start, length: NSMaxRange(line) - start))
@@ -143,7 +146,6 @@ nonisolated enum MarkdownHighlighter {
                     }
                 }
             }
-            lineStart = NSMaxRange(line)
         }
         guard !math.isEmpty else { return }
         // Trim line terminators so styling stays inside the lines.
@@ -153,15 +155,13 @@ nonisolated enum MarkdownHighlighter {
             return range
         }
 
-        func outsideMath(_ range: NSRange) -> Bool {
-            !math.contains { NSIntersectionRange($0, range).length > 0 }
-        }
-        spans.bold = spans.bold.filter(outsideMath)
-        spans.italic = spans.italic.filter(outsideMath)
-        spans.strikethrough = spans.strikethrough.filter(outsideMath)
-        spans.markers = spans.markers.filter(outsideMath)
-        spans.links = spans.links.filter { outsideMath($0.range) }
-        spans.footnoteReferences = spans.footnoteReferences.filter(outsideMath)
+        let index = RangeIndex(math)
+        spans.bold.removeAll(where: index.intersects)
+        spans.italic.removeAll(where: index.intersects)
+        spans.strikethrough.removeAll(where: index.intersects)
+        spans.markers.removeAll(where: index.intersects)
+        spans.links.removeAll { index.intersects($0.range) }
+        spans.footnoteReferences.removeAll(where: index.intersects)
         spans.math = math
     }
 
@@ -186,6 +186,34 @@ nonisolated enum MarkdownHighlighter {
             index += 1
         }
         return ranges
+    }
+}
+
+/// Answers "does this range overlap any of these?" in O(log n): the ranges are merged
+/// into sorted, disjoint runs once.
+nonisolated struct RangeIndex {
+    private var runs: [NSRange] = []
+
+    init(_ ranges: [NSRange]) {
+        for range in ranges.filter({ $0.length > 0 }).sorted(by: { $0.location < $1.location }) {
+            if let last = runs.last, range.location <= NSMaxRange(last) {
+                runs[runs.count - 1].length = max(NSMaxRange(last), NSMaxRange(range)) - last.location
+            } else {
+                runs.append(range)
+            }
+        }
+    }
+
+    func intersects(_ range: NSRange) -> Bool {
+        guard range.length > 0 else { return false }
+        // The last run starting before the range's end is the only candidate.
+        var low = 0
+        var high = runs.count
+        while low < high {
+            let middle = (low + high) / 2
+            if runs[middle].location < NSMaxRange(range) { low = middle + 1 } else { high = middle }
+        }
+        return low > 0 && NSMaxRange(runs[low - 1]) > range.location
     }
 }
 
