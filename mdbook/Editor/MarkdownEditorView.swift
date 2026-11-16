@@ -413,11 +413,16 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard newRange != activeParagraph else { return }
             formatTableIfLeft(from: activeParagraph, to: newRange)
 
-            // Entering or leaving a table or image line swaps its rendering, so restyle fully.
-            let oldIsBlock = activeParagraph.map { activeRegion(for: $0) != $0 || hasBlockRendering(in: $0, storage: storage) } ?? false
-            let newIsBlock = activeRegion(for: newRange) != newRange || hasBlockRendering(in: newRange, storage: storage)
+            // Entering or leaving a table or a line with images swaps its rendering, so
+            // restyle those paragraphs (and whole blocks around them).
+            let oldIsBlock = activeParagraph.map { needsRestyleOnCaretChange($0, storage: storage) } ?? false
+            let newIsBlock = needsRestyleOnCaretChange(newRange, storage: storage)
             if oldIsBlock || newIsBlock {
-                restyleEverything()
+                var region = newRange
+                if let activeParagraph, NSMaxRange(activeParagraph) <= storage.length {
+                    region = NSUnionRange(region, activeParagraph)
+                }
+                restyle(region: IncrementalStyling.expand(region, in: storage.string as NSString, spans: spans))
                 return
             }
             let styler = MarkdownStyler(theme: theme)
@@ -429,6 +434,12 @@ struct MarkdownEditorView: NSViewRepresentable {
             invalidateGlyphs(in: newRange, textView: textView)
             activeParagraph = newRange
             applyFocus()
+        }
+
+        private func needsRestyleOnCaretChange(_ paragraph: NSRange, storage: NSTextStorage) -> Bool {
+            activeRegion(for: paragraph) != paragraph
+                || hasBlockRendering(in: paragraph, storage: storage)
+                || spans.links.contains { $0.isImage && NSIntersectionRange($0.range, paragraph).length > 0 }
         }
 
         private func hasBlockRendering(in range: NSRange, storage: NSTextStorage) -> Bool {

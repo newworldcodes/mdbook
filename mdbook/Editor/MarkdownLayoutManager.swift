@@ -40,6 +40,35 @@ final class MarkdownLayoutManager: NSLayoutManager {
         }
     }
 
+    override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
+        // After the glyphs: a linked image's stand-in character gets the text view's link
+        // colour and underline regardless of its own attributes, so cover it.
+        guard let textStorage else { return }
+        drawInlineImages(in: characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil), storage: textStorage, origin: origin)
+    }
+
+    /// Images in running text, drawn over the kerned character standing in for each one and
+    /// centred on the line.
+    private func drawInlineImages(in characterRange: NSRange, storage: NSTextStorage, origin: NSPoint) {
+        storage.enumerateAttribute(.markdownInlineImage, in: characterRange, options: []) { value, range, _ in
+            guard let inline = value as? MarkdownInlineImage else { return }
+            let glyph = glyphIndexForCharacter(at: range.location)
+            let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let position = location(forGlyphAt: glyph)
+            let font = storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont ?? .systemFont(ofSize: NSFont.systemFontSize)
+            let lineHeight = font.ascender - font.descender
+            let baseline = origin.y + line.minY + position.y
+            let rect = NSRect(
+                x: origin.x + line.minX + position.x,
+                y: baseline - font.ascender + (lineHeight - inline.size.height) / 2,
+                width: inline.size.width,
+                height: inline.size.height
+            )
+            inline.image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        }
+    }
+
     /// The block rendering whose source falls in `characters`, if any. Hidden glyphs join
     /// the line fragment of the line before, so look across the whole range.
     func blockRendering(in characters: NSRange) -> MarkdownBlockRendering? {

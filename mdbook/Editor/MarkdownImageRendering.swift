@@ -8,6 +8,23 @@
 
 import AppKit
 
+/// An image drawn inline, on the character that stands in for it (see
+/// `MarkdownStyler.renderInlineImages`).
+final class MarkdownInlineImage: NSObject {
+    let image: NSImage
+    let size: NSSize
+
+    init(image: NSImage, size: NSSize) {
+        self.image = image
+        self.size = size
+    }
+}
+
+extension NSAttributedString.Key {
+    /// A `MarkdownInlineImage` on the last character of an image's source.
+    static let markdownInlineImage = NSAttributedString.Key("mdbook.inlineImage")
+}
+
 final class MarkdownImageRendering: MarkdownBlockRendering {
     struct Item {
         var image: NSImage

@@ -273,7 +273,8 @@ struct MarkdownStyler {
 
     /// Lines made only of images (and the links around linked badges) show the images
     /// themselves: in place of the hidden source when the caret is elsewhere, or under the
-    /// source while it's being edited. Images inside running text stay as their alt text.
+    /// source while it's being edited. Images inside running text are drawn inline, at the
+    /// line's height, while the caret is elsewhere.
     private func renderImageLines(spans: MarkdownSpans, storage: NSTextStorage, activeRegion: NSRange?, width: CGFloat, loadImage: (String) -> NSImage?) {
         let ns = storage.string as NSString
         let images = spans.links.filter(\.isImage)
@@ -296,7 +297,12 @@ struct MarkdownStyler {
             let onlyImages = (0..<line.length).allSatisfy { offset in
                 covered[offset] || [0x20, 0x09].contains(ns.character(at: line.location + offset))
             }
-            guard onlyImages else { continue }
+            guard onlyImages else {
+                if theme.hidesMarkers, !(activeRegion.map { intersects($0, line) } ?? false) {
+                    renderInlineImages(lineImages, storage: storage, width: width, loadImage: loadImage)
+                }
+                continue
+            }
 
             let loaded = lineImages.sorted { $0.range.location < $1.range.location }.compactMap { image in
                 loadImage(image.destination).map { (image: $0, source: image.range.location) }
@@ -309,6 +315,33 @@ struct MarkdownStyler {
             if hides {
                 storage.addAttribute(.markdownHidden, value: true, range: line)
             }
+        }
+    }
+
+    /// Draws images that sit in running text inline: the image's source is hidden except
+    /// its last character, which turns transparent and is kerned to the image's width so the
+    /// line makes room; the layout manager draws the image there. A linked image keeps its
+    /// link on that character, so it stays clickable.
+    private func renderInlineImages(_ images: [MarkdownSpans.Link], storage: NSTextStorage, width: CGFloat, loadImage: (String) -> NSImage?) {
+        for image in images where image.range.length >= 5 && NSMaxRange(image.range) <= storage.length {
+            guard let picture = loadImage(image.destination), picture.size.height > 0, picture.size.width > 0 else { continue }
+            let last = NSRange(location: NSMaxRange(image.range) - 1, length: 1)
+            let font = storage.attribute(.font, at: last.location, effectiveRange: nil) as? NSFont ?? theme.baseFont
+            let lineHeight = ceil(font.ascender - font.descender)
+            var size = NSSize(width: (picture.size.width * lineHeight / picture.size.height).rounded(), height: lineHeight)
+            if size.width > width {
+                size = NSSize(width: width, height: (lineHeight * width / size.width).rounded())
+            }
+            storage.addAttribute(.markdownHidden, value: true, range: NSRange(location: image.range.location, length: image.range.length - 1))
+            // The last character carries the image: visible (so it takes space) but clear.
+            storage.removeAttribute(.markdownHidden, range: last)
+            storage.removeAttribute(.markdownMarker, range: last)
+            let glyphWidth = (")" as NSString).size(withAttributes: [.font: font]).width
+            storage.addAttributes([
+                .markdownInlineImage: MarkdownInlineImage(image: picture, size: size),
+                .foregroundColor: NSColor.clear,
+                .kern: size.width - glyphWidth,
+            ], range: last)
         }
     }
 

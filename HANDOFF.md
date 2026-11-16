@@ -87,13 +87,16 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
   matching source. Hidden glyphs join the *previous* line's fragment and the hidden line's
   terminator starts a fragment of its own, so: look renderings up across a fragment's
   character range (`MarkdownLayoutManager.blockRendering(in:)`), and a hidden rendering's
-  attribute also covers that terminator so it collapses. Entering or leaving a line with a
-  rendering restyles fully; a width change restyles (coalesced) so renderings refit.
+  attribute also covers that terminator so it collapses. Entering or leaving a table or a line with images restyles just
+  those paragraphs (`needsRestyleOnCaretChange`); a width change restyles (coalesced) so renderings refit.
   - Tables (caret outside): source hidden; cells are the styled source runs minus markers,
     column widths from `TableColumnSizer` for the container width.
   - Image lines (only images, linked badges and whitespace on the line): the images replace
     the hidden source when the caret is elsewhere, and sit under the visible source while
-    it's edited. Images inside running text stay as alt text. The coordinator loads local
+    it's edited. Images inside running text are drawn inline at line height while the caret
+    is elsewhere: the source is hidden except its last character, which is kerned to the
+    image's width (`.markdownInlineImage`) and covered by the image in `drawGlyphs` (after
+    the glyphs, because a linked image's character gets the link colour and underline). The coordinator loads local
     images synchronously (cached; misses retried after each edit) and remote ones in the
     background, which needs the Outgoing Connections entitlement (not enabled yet; enable it
     in Signing & Capabilities, never by editing `project.xcproj`).
@@ -179,11 +182,10 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 ## Known gaps (priority order)
 
-1. Images inside running text in the WYSIWYG view (block image lines are done).
-2. Mermaid diagrams (shown as source) and real math typesetting: both need a JS library in a
+1. Mermaid diagrams (shown as source) and real math typesetting: both need a JS library in a
    WKWebView, i.e. a bundled third-party asset plus the Outgoing Connections entitlement
-   (WebKit's content process dies in the sandbox without it). Decision pending.
-3. Tests for the coordinator, autosave, rename and history.
+   (WebKit's content process dies in the sandbox without it). Deferred for now.
+2. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a
