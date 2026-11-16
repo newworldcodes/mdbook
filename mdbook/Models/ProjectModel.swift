@@ -42,6 +42,9 @@ final class ProjectModel {
 
     private(set) var rootURL: URL?
     private(set) var tree: [FileNode] = []
+    /// The book's table of contents, when the project has a SUMMARY.md.
+    private(set) var summary: BookSummary?
+    private(set) var summaryURL: URL?
     var expandedFolders: Set<URL> = []
 
     /// Bound to the sidebar list. Changing it loads the file and records history
@@ -211,6 +214,7 @@ final class ProjectModel {
     }
 
     private func preferredEntryFile() -> URL? {
+        if summary != nil, let first = readingOrder.first { return first }
         let preferredNames = ["readme.md", "summary.md", "index.md"]
         for name in preferredNames {
             if let node = tree.first(where: { !$0.isDirectory && $0.name.lowercased() == name }) {
@@ -229,10 +233,66 @@ final class ProjectModel {
         } else {
             tree = FileNode.buildTree(at: rootURL)
         }
+        reloadSummary()
         if let selection, FileNode.find(selection, in: tree) == nil {
             // The selected file disappeared from disk.
             self.selection = nil
         }
+    }
+
+    private func reloadSummary() {
+        guard let rootURL, standaloneFile == nil, let url = BookSummary.locate(in: rootURL),
+              let source = try? String(contentsOf: url, encoding: .utf8) else {
+            summary = nil
+            summaryURL = nil
+            return
+        }
+        let parsed = BookSummary.parse(source, relativeTo: url)
+        if summaryURL != url { summaryURL = url }
+        if parsed != summary { summary = parsed }
+    }
+
+    // MARK: - Chapters
+
+    /// Every markdown file in sidebar order.
+    var treeFiles: [URL] {
+        func flatten(_ nodes: [FileNode]) -> [URL] {
+            nodes.flatMap { $0.isDirectory ? flatten($0.children ?? []) : [$0.url] }
+        }
+        return flatten(tree)
+    }
+
+    /// The order chapters are read in: the summary's, or the sidebar's when there isn't one.
+    var readingOrder: [URL] {
+        let files = treeFiles
+        guard let summary else { return files }
+        let existing = Set(files)
+        let order = summary.readingOrder.filter(existing.contains)
+        return order.isEmpty ? files : order
+    }
+
+    /// What the summary calls a chapter, else its file name without the extension.
+    func chapterTitle(for url: URL) -> String {
+        summary?.title(for: url) ?? url.deletingPathExtension().lastPathComponent
+    }
+
+    var previousChapter: ChapterLink? { chapter(offsetBy: -1) }
+    var nextChapter: ChapterLink? { chapter(offsetBy: 1) }
+
+    private func chapter(offsetBy offset: Int) -> ChapterLink? {
+        guard let selection else { return nil }
+        let order = readingOrder
+        guard let index = order.firstIndex(of: selection), order.indices.contains(index + offset) else { return nil }
+        let url = order[index + offset]
+        return ChapterLink(title: chapterTitle(for: url), url: url)
+    }
+
+    func goToPreviousChapter() {
+        if let previousChapter { navigate(to: previousChapter.url) }
+    }
+
+    func goToNextChapter() {
+        if let nextChapter { navigate(to: nextChapter.url) }
     }
 
     // MARK: - Loading and saving
@@ -511,6 +571,12 @@ final class ProjectModel {
               onDisk != text else { return }
         text = onDisk
     }
+}
+
+/// A neighbouring chapter in the reading order.
+struct ChapterLink: Equatable {
+    let title: String
+    let url: URL
 }
 
 /// A request to scroll to a heading. Each request has its own identity so the same

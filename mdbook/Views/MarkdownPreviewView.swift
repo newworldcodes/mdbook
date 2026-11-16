@@ -16,6 +16,10 @@ struct MarkdownPreviewView: View {
     var anchorRequest: AnchorRequest? = nil
     /// When set, follows the editor's scroll position (0...1) in the split layout.
     var scrollFraction: Double? = nil
+    /// Neighbouring chapters, shown as links at the end of the page.
+    var previousChapter: ChapterLink? = nil
+    var nextChapter: ChapterLink? = nil
+    var onOpenChapter: ((URL) -> Void)? = nil
 
     @State private var blocks: [MarkdownBlock] = []
     @State private var headingIDs: [Int: String] = [:]
@@ -31,6 +35,10 @@ struct MarkdownPreviewView: View {
                     ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                         MarkdownBlockView(block: block, documentURL: documentURL)
                             .id(headingIDs[index])
+                    }
+                    if let onOpenChapter, previousChapter != nil || nextChapter != nil {
+                        ChapterFooter(previous: previousChapter, next: nextChapter, open: onOpenChapter)
+                            .padding(.top, 24)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -100,6 +108,49 @@ struct MarkdownPreviewView: View {
 }
 
 // MARK: - Blocks
+
+/// Previous/next chapter links at the end of a rendered chapter.
+struct ChapterFooter: View {
+    let previous: ChapterLink?
+    let next: ChapterLink?
+    let open: (URL) -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Divider()
+            HStack(alignment: .top) {
+                if let previous {
+                    link(previous, caption: "Previous", systemImage: "chevron.left", alignment: .leading)
+                }
+                Spacer(minLength: 12)
+                if let next {
+                    link(next, caption: "Next", systemImage: "chevron.right", alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    private func link(_ chapter: ChapterLink, caption: String, systemImage: String, alignment: HorizontalAlignment) -> some View {
+        Button {
+            open(chapter.url)
+        } label: {
+            VStack(alignment: alignment, spacing: 2) {
+                Label(caption, systemImage: systemImage)
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(chapter.title)
+                    .font(.system(size: 15, weight: .medium))
+                    .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+            }
+            .padding(10)
+            .frame(maxWidth: 280, alignment: alignment == .leading ? .leading : .trailing)
+            .background(Color(nsColor: .quaternarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .help(chapter.url.lastPathComponent)
+    }
+}
 
 struct MarkdownBlockView: View {
     let block: MarkdownBlock

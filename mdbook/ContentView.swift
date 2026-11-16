@@ -38,6 +38,24 @@ struct ContentView: View {
                 .help("Go forward")
             }
 
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    model.goToPreviousChapter()
+                } label: {
+                    Label("Previous Chapter", systemImage: "arrow.up.doc")
+                }
+                .disabled(model.previousChapter == nil)
+                .help(model.previousChapter.map { "Previous chapter: \($0.title)" } ?? "No previous chapter")
+
+                Button {
+                    model.goToNextChapter()
+                } label: {
+                    Label("Next Chapter", systemImage: "arrow.down.doc")
+                }
+                .disabled(model.nextChapter == nil)
+                .help(model.nextChapter.map { "Next chapter: \($0.title)" } ?? "No next chapter")
+            }
+
             ToolbarItem(placement: .principal) {
                 Picker("Layout", selection: $model.layout) {
                     ForEach(EditorLayout.allCases) { layout in
@@ -183,7 +201,10 @@ struct DocumentAreaView: View {
                             documentURL: selection,
                             onOpenLink: model.open(linkDestination:),
                             anchorRequest: model.pendingAnchor,
-                            scrollFraction: sourceScrollFraction
+                            scrollFraction: sourceScrollFraction,
+                            previousChapter: model.previousChapter,
+                            nextChapter: model.nextChapter,
+                            onOpenChapter: model.navigate(to:)
                         )
                         .frame(minWidth: 240, maxWidth: .infinity, maxHeight: .infinity)
                     }

@@ -452,6 +452,63 @@ struct TableColumnSizerTests {
     }
 }
 
+// MARK: - Book summary
+
+@Suite("Book summary")
+struct BookSummaryTests {
+    let summaryURL = URL(fileURLWithPath: "/book/src/SUMMARY.md")
+
+    @Test("Prefix, numbered, nested, draft, separator, part and suffix chapters")
+    func parse() {
+        let source = """
+        # Summary
+
+        [Introduction](README.md)
+
+        - [Getting started](start/index.md)
+            - [Install](start/install.md)
+        - [Coming soon]()
+
+        ---
+
+        # Reference
+
+        1. [Syntax](ref/syntax.md)
+
+        [Appendix](appendix.md)
+        """
+        let summary = BookSummary.parse(source, relativeTo: summaryURL)
+        #expect(summary.parts.map(\.title) == [nil, "Reference"]) // the separator before a part title adds no empty part
+        #expect(summary.parts[0].entries.map(\.title) == ["Introduction", "Getting started", "Coming soon"])
+        #expect(summary.parts[0].entries[1].children.map(\.title) == ["Install"])
+        #expect(summary.parts[0].entries[2].url == nil)
+        #expect(summary.readingOrder.map(\.path) == [
+            "/book/src/README.md", "/book/src/start/index.md", "/book/src/start/install.md",
+            "/book/src/ref/syntax.md", "/book/src/appendix.md",
+        ])
+        #expect(summary.title(for: URL(fileURLWithPath: "/book/src/start/install.md")) == "Install")
+    }
+
+    @Test("book.toml's src folder")
+    func sourceFolder() {
+        #expect(BookSummary.sourceFolder(inBookTOML: "[book]\ntitle = \"x\"\nsrc = \"chapters\"\n") == "chapters")
+        #expect(BookSummary.sourceFolder(inBookTOML: "[build]\nsrc = \"no\"\n") == nil)
+    }
+
+    @Test("The summary is found in the source folder")
+    func locate() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("summary-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let chapters = root.appendingPathComponent("chapters")
+        try FileManager.default.createDirectory(at: chapters, withIntermediateDirectories: true)
+        #expect(BookSummary.locate(in: root) == nil)
+        try "[book]\nsrc = \"chapters\"\n".write(to: root.appendingPathComponent("book.toml"), atomically: true, encoding: .utf8)
+        try "# Summary\n".write(to: chapters.appendingPathComponent("SUMMARY.md"), atomically: true, encoding: .utf8)
+        #expect(BookSummary.locate(in: root)?.lastPathComponent == "SUMMARY.md")
+        #expect(BookSummary.locate(in: root)?.deletingLastPathComponent().lastPathComponent == "chapters")
+    }
+}
+
 // MARK: - Code highlighting
 
 @Suite("Code highlighter")

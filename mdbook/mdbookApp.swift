@@ -71,6 +71,13 @@ struct mdbookApp: App {
                     .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
                     .disabled(!model.canGoForward)
                 Divider()
+                Button("Previous Chapter") { model.goToPreviousChapter() }
+                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    .disabled(model.previousChapter == nil)
+                Button("Next Chapter") { model.goToNextChapter() }
+                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                    .disabled(model.nextChapter == nil)
+                Divider()
                 Button("Reveal Current File in Finder") {
                     if let selection = model.selection { model.revealInFinder(selection) }
                 }

@@ -7,6 +7,8 @@ import SwiftUI
 
 struct ProjectSidebarView: View {
     @Bindable var model: ProjectModel
+    /// With a SUMMARY.md the Contents lead and the raw file list starts collapsed.
+    @State private var filesExpanded = false
 
     var body: some View {
         Group {
@@ -28,8 +30,25 @@ struct ProjectSidebarView: View {
                 }
             } else {
                 List(selection: $model.selection) {
-                    ForEach(model.tree) { node in
-                        FileNodeRow(node: node, model: model)
+                    if let summary = model.summary {
+                        ForEach(summary.parts) { part in
+                            Section {
+                                ForEach(part.entries) { entry in
+                                    SummaryEntryRow(entry: entry, depth: 0)
+                                }
+                            } header: {
+                                if let title = part.title {
+                                    Text(title)
+                                } else if part.id == 0 {
+                                    Text("Contents")
+                                }
+                            }
+                        }
+                        Section("Files", isExpanded: $filesExpanded) {
+                            fileRows
+                        }
+                    } else {
+                        fileRows
                     }
                 }
                 .listStyle(.sidebar)
@@ -57,6 +76,38 @@ struct ProjectSidebarView: View {
                 .padding(8)
                 .background(.bar)
             }
+        }
+    }
+}
+
+extension ProjectSidebarView {
+    private var fileRows: some View {
+        ForEach(model.tree) { node in
+            FileNodeRow(node: node, model: model)
+        }
+    }
+}
+
+/// A chapter from SUMMARY.md; nested chapters are indented below it. Drafts (no file
+/// yet) are shown dimmed and can't be selected.
+struct SummaryEntryRow: View {
+    let entry: BookSummary.Entry
+    let depth: Int
+
+    var body: some View {
+        Group {
+            if let url = entry.url {
+                Label(entry.title, systemImage: "doc.text")
+                    .tag(url)
+            } else {
+                Label(entry.title, systemImage: "doc.badge.ellipsis")
+                    .foregroundStyle(.secondary)
+                    .help("Draft chapter: no file yet")
+            }
+        }
+        .padding(.leading, CGFloat(depth) * 14)
+        ForEach(entry.children) { child in
+            SummaryEntryRow(entry: child, depth: depth + 1)
         }
     }
 }

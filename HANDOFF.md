@@ -40,6 +40,7 @@ The project file is Xcode 27's JSON-style `mdbook.xcodeproj/project.xcproj`, not
 | App shell | `mdbookApp.swift`, `AppDelegate.swift`, `ContentView.swift` | `NavigationSplitView`, toolbar (back/forward, layout picker, outline menu, save state), menus (File, Format, View, Go). AppDelegate owns the model and handles folders/files opened from Finder or `open -a`. |
 | Project model | `Models/ProjectModel.swift` | `@Observable`. Folder tree, selection, autosave (1 s debounce + ⌘S + flush on resign/terminate), history, link opening, new/rename/trash, outline, anchors, FSEvents watcher (`FolderWatcher.swift`). Persists the last project as a security-scoped bookmark. Standalone-file mode when only a file was granted by the sandbox. |
 | File tree | `Models/FileNode.swift` | Markdown files plus folders that contain them. Folders first, natural sort. |
+| Book structure | `Markdown/BookSummary.swift`, model "Chapters" section | mdBook SUMMARY.md (root, `book.toml`'s `src`, or `src/`): prefix/numbered/nested/draft/suffix chapters, parts, separators. Drives the sidebar's Contents (files collapse under "Files"), the reading order (sidebar order without a summary) and previous/next chapter (Go menu ⌥⌘←/→, toolbar, preview footer). |
 | Sidebar | `Views/ProjectSidebarView.swift` | Recursive `DisclosureGroup`s bound to `expandedFolders`; context menus. |
 | Editor | `Editor/MarkdownEditorView.swift` (representable + coordinator), `MarkdownTextView.swift` (NSTextView subclass), `MarkdownStyler.swift`, `MarkdownLayoutManager.swift`, `EditorTheme.swift` | TextKit 1 stack built by hand so the layout manager delegate can hide glyphs. Two modes: `.wysiwyg` (hide markers away from the caret) and `.source` (monospace, coloured syntax). |
 | Markdown scanning | `Markdown/MarkdownHighlighter.swift`, `MarkdownSourceMap.swift` | A swift-markdown `MarkupWalker` producing `MarkdownSpans` (UTF-16 `NSRange`s) for the styler. The source map converts cmark's UTF-8 byte columns. See "swift-markdown" below for the cmark position bugs it works around. |
@@ -160,15 +161,14 @@ Next: swift-markdown's `HTMLFormatter` is a candidate for HTML export.
 
 ## Known gaps (priority order)
 
-1. SUMMARY.md-driven chapter order with previous/next navigation.
-2. Project-wide search.
-3. Images inside running text in the WYSIWYG view (block image lines are done).
-4. Incremental restyling for large files (or adopt STTextView).
-5. Tab/Shift-Tab list indentation.
-6. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
-7. Export to HTML/PDF, printing, copy as rich text.
-8. Footnotes, math, Mermaid, emoji shortcodes.
-9. Tests for the coordinator, autosave, rename and history.
+1. Project-wide search.
+2. Images inside running text in the WYSIWYG view (block image lines are done).
+3. Incremental restyling for large files (or adopt STTextView).
+4. Tab/Shift-Tab list indentation.
+5. "File changed on disk while you have unsaved edits" prompt; non-UTF-8 encodings.
+6. Export to HTML/PDF, printing, copy as rich text.
+7. Footnotes, math, Mermaid, emoji shortcodes.
+8. Tests for the coordinator, autosave, rename and history.
 
 Known quirks: links inside a rendered editor table aren't clickable (a click enters the
 table); find/selection highlights don't show inside a rendered table; an image nested inside a
